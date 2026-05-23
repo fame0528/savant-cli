@@ -283,3 +283,13 @@ Auto-discovered knowledge files:
 {{- end}}
 </knowledge>
 {{- end}}
+
+{{- if .SkillsXML}}
+<skills>
+The following skills are available. Skills are specialized knowledge modules.
+To activate a skill, read its SKILL.md file using the read tool before acting on a matching task.
+The description is a trigger, not a spec — always load the full SKILL.md before using a skill.
+
+{{.SkillsXML}}
+</skills>
+{{- end}}

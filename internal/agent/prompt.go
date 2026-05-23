@@ -10,6 +10,8 @@ import (
 	"strings"
 	"text/template"
 	"time"
+
+	"github.com/spenc/savant-cli/internal/skills"
 )
 
 //go:embed templates/*.md
@@ -24,8 +26,9 @@ type PromptData struct {
 	GitBranch     string
 	GitStatus     string
 	GitLog        string
-	ContextFiles  []ContextFile
+	ContextFiles   []ContextFile
 	KnowledgeFiles []ContextFile
+	SkillsXML     string
 }
 
 // ContextFile represents a loaded project instruction file.
@@ -100,6 +103,10 @@ func gatherPromptData() PromptData {
 
 	// Knowledge files (auto-discovered)
 	data.KnowledgeFiles = loadKnowledgeFiles(cwd)
+
+	// Skills (Agent Skills standard)
+	discovered := skills.Discover(cwd)
+	data.SkillsXML = skills.ToPromptXML(discovered)
 
 	return data
 }

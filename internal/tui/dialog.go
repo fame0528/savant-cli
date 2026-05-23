@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -352,12 +353,111 @@ func DialogStyle(theme *Theme, width, height, dialogWidth, dialogHeight int) lip
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.DoubleBorder()).
-		BorderForeground(HyperCyan).
-		Background(PanelBg).
+		BorderForeground(NeonCyan).
+		Background(Surface).
 		Foreground(TextPrimary).
 		Padding(1, 2).
 		Width(dialogWidth).
 		MaxHeight(dialogHeight).
 		MarginTop(y).
 		MarginLeft(x)
+}
+
+// ─────────────────────────────────────────────────────────────
+// Permission Dialog
+// ─────────────────────────────────────────────────────────────
+
+// PermissionDialog asks the user to approve or deny a tool execution.
+type PermissionDialog struct {
+	id       string
+	toolName string
+	command  string // e.g., the bash command or file path
+	selected int    // 0 = approve, 1 = deny
+}
+
+// NewPermissionDialog creates a permission approval dialog.
+func NewPermissionDialog(toolName, command string) *PermissionDialog {
+	return &PermissionDialog{
+		id:       "permission",
+		toolName: toolName,
+		command:  command,
+	}
+}
+
+func (d *PermissionDialog) ID() string { return d.id }
+
+func (d *PermissionDialog) HandleKey(msg tea.KeyPressMsg) DialogAction {
+	switch msg.String() {
+	case "left", "h":
+		d.selected = 0
+	case "right", "l":
+		d.selected = 1
+	case "enter":
+		if d.selected == 0 {
+			return DialogConfirm
+		}
+		return DialogCancel
+	case "esc", "ctrl+c", "n", "N":
+		return DialogCancel
+	case "y", "Y":
+		return DialogConfirm
+	case "a", "A":
+		d.selected = 0
+		return DialogConfirm
+	case "d", "D":
+		d.selected = 1
+		return DialogCancel
+	}
+	return DialogNone
+}
+
+// Approved returns true if the user approved the action.
+func (d *PermissionDialog) Approved() bool {
+	return d.selected == 0
+}
+
+func (d *PermissionDialog) Render(theme *Theme, width, height int) string {
+	dialogWidth := 55
+	if dialogWidth > width-4 {
+		dialogWidth = width - 4
+	}
+
+	// Build the dialog
+	var sb strings.Builder
+
+	// Header with neon yellow warning
+	header := theme.Warn.Bold(true).Render("⚠ PERMISSION REQUIRED")
+	sb.WriteString(theme.Dialog.Render("╭"+strings.Repeat("─", dialogWidth-2)+"╮") + "\n")
+	sb.WriteString(theme.Dialog.Render("│") + centerText(header, dialogWidth-2) + theme.Dialog.Render("│") + "\n")
+	sb.WriteString(theme.Dialog.Render("│"+strings.Repeat("─", dialogWidth-2)+"│") + "\n")
+
+	// Tool name in neon orange
+	toolLine := theme.ToolName.Render("  Tool: " + d.toolName)
+	sb.WriteString(theme.Dialog.Render("│") + fmt.Sprintf("%-*s", dialogWidth-2, stripAnsi(toolLine)) + theme.Dialog.Render("│") + "\n")
+
+	// Command/path in dim text
+	cmdLine := d.command
+	if utf8.RuneCountInString(cmdLine) > dialogWidth-8 {
+		runes := []rune(cmdLine)
+		cmdLine = string(runes[:dialogWidth-11]) + "..."
+	}
+	sb.WriteString(theme.Dialog.Render("│") + theme.TextDim.Render(fmt.Sprintf("  %-*s", dialogWidth-4, cmdLine)) + theme.Dialog.Render("│") + "\n")
+
+	sb.WriteString(theme.Dialog.Render("│"+strings.Repeat(" ", dialogWidth-2)+"│") + "\n")
+
+	// Buttons: Approve (green) / Deny (red)
+	approveBtn := theme.PermApprove.Render(" [A] Approve ")
+	denyBtn := theme.PermDeny.Render(" [D] Deny ")
+
+	if d.selected == 0 {
+		approveBtn = theme.PermApprove.Bold(true).Render(" ▸ [A] Approve ")
+	} else {
+		denyBtn = theme.PermDeny.Bold(true).Render(" ▸ [D] Deny ")
+	}
+
+	buttons := approveBtn + "  " + denyBtn
+	sb.WriteString(theme.Dialog.Render("│") + centerText(buttons, dialogWidth-2) + theme.Dialog.Render("│") + "\n")
+	sb.WriteString(theme.Dialog.Render("╰"+strings.Repeat("─", dialogWidth-2)+"╯") + "\n")
+
+	return sb.String()
 }

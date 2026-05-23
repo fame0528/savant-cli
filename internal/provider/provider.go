@@ -93,7 +93,11 @@ type StreamDelta struct {
 	Role      string     `json:"role,omitempty"`
 	Content   string     `json:"content,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Reasoning string     `json:"reasoning,omitempty"`
 }
+
+// ChatMessage also needs a Reasoning field for non-streaming responses.
+// We add it to the message directly since MiMo returns it alongside content.
 
 // Provider is the interface all AI providers implement.
 type Provider interface {

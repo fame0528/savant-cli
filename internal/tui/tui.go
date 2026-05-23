@@ -68,7 +68,7 @@ type Model struct {
 	input     string
 	cursorPos int
 
-	fileTree    *FileTree
+	fileTree    *FileTree // kept for completions ScanFiles
 	completions *Completions
 	dialogs     *DialogOverlay
 
@@ -109,7 +109,7 @@ func New(p provider.Provider, registry *tools.Registry, cmdReg *commands.Registr
 		theme:        NewCyberpunkTheme(),
 		maxTurns:     maxTurns,
 		sidebarWidth: 30,
-		showSidebar:  true,
+		showSidebar:  false,
 		showLogs:     false,
 		sidebarTab:   0,
 		fileTree:     NewFileTree(cwd, 28),
@@ -231,7 +231,7 @@ func (m Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "ctrl+s":
+	case "ctrl+b":
 		m.showSidebar = !m.showSidebar
 		return m, nil
 	case "ctrl+l":
@@ -362,6 +362,10 @@ func (m Model) handleAgentEvent(e agent.Event) (tea.Model, tea.Cmd) {
 	case agent.EventText:
 		m.streaming += e.Content
 		return m, eventSub(m.evtChan)
+	case agent.EventThinking:
+		// Show thinking content as a system message with yellow styling
+		m.messages = append(m.messages, chatMessage{role: "thinking", content: e.Content, timestamp: time.Now()})
+		return m, eventSub(m.evtChan)
 	case agent.EventToolCall:
 		m.messages = append(m.messages, chatMessage{role: "tool", tool: e.Tool, content: "Calling " + e.Tool + "...", timestamp: time.Now()})
 		if m.pet != nil {
@@ -375,6 +379,10 @@ func (m Model) handleAgentEvent(e agent.Event) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
+		return m, eventSub(m.evtChan)
+	case agent.EventHistoryUpdate:
+		// Save conversation history for next turn
+		m.agentMessages = e.Messages
 		return m, eventSub(m.evtChan)
 	case agent.EventDone:
 		return m, eventSub(m.evtChan)
@@ -451,7 +459,7 @@ func (m Model) View() tea.View {
 	v := tea.NewView(sb.String())
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
-	v.BackgroundColor = VoidIndigo
+	v.BackgroundColor = Background
 	v.ForegroundColor = TextPrimary
 	v.WindowTitle = "SAVANT CLI"
 	return v
@@ -504,8 +512,8 @@ func (m Model) renderMainArea(chatWidth, height int) string {
 func (m Model) renderSidebar(height int) string {
 	var sb strings.Builder
 
-	tabs := []string{"Files", "Chat", "Tasks", "Pet"}
-	icons := []string{"📁", "💬", "📋", "🐾"}
+	tabs := []string{"Info", "Pet", "Tasks", "Logs"}
+	icons := []string{"ℹ", "🐾", "📋", "📄"}
 	tabBar := ""
 	for i, tab := range tabs {
 		if i == m.sidebarTab {
@@ -526,37 +534,41 @@ func (m Model) renderSidebar(height int) string {
 
 	switch m.sidebarTab {
 	case 0:
-		sb.WriteString(m.renderFileTreePanel(contentHeight))
+		sb.WriteString(m.renderInfoPanel(contentHeight))
 	case 1:
-		sb.WriteString(m.renderSessionPanel(contentHeight))
+		sb.WriteString(m.renderPetPanel(contentHeight))
 	case 2:
 		sb.WriteString(m.renderTaskPanel(contentHeight))
 	case 3:
-		sb.WriteString(m.renderPetPanel(contentHeight))
+		sb.WriteString(m.renderLogsPanel(contentHeight))
 	}
 
 	return sb.String()
 }
 
-func (m Model) renderFileTreePanel(maxLines int) string {
-	if m.fileTree == nil {
-		return m.theme.TextDim.Render("  No files found.\n")
-	}
-	lines := strings.Split(m.fileTree.Render(m.theme, m.sidebarWidth-2), "\n")
-	if len(lines) > maxLines {
-		lines = lines[:maxLines]
-	}
-	return strings.Join(lines, "\n")
-}
-
-func (m Model) renderSessionPanel(maxLines int) string {
+func (m Model) renderInfoPanel(maxLines int) string {
 	var sb strings.Builder
-	if m.turnCount == 0 {
-		sb.WriteString(m.theme.TextDim.Render("  No active session.\n"))
-	} else {
-		sb.WriteString(m.theme.Info.Render(fmt.Sprintf("  Session: %d turns\n", m.turnCount)))
-		sb.WriteString(m.theme.TextDim.Render(fmt.Sprintf("  Messages: %d\n", len(m.messages))))
+
+	// Provider info
+	sb.WriteString(m.theme.Info.Bold(true).Render("  Provider") + "\n")
+	sb.WriteString(m.theme.TextPrimary.Render("  "+m.provider.Name()) + "\n")
+	sb.WriteString(m.theme.DividerLine.Render("  "+safeRepeat("─", m.sidebarWidth-4)) + "\n")
+
+	// Session info
+	sb.WriteString(m.theme.Info.Bold(true).Render("  Session") + "\n")
+	sb.WriteString(m.theme.TextDim.Render(fmt.Sprintf("  Turns: %d", m.turnCount)) + "\n")
+	sb.WriteString(m.theme.TextDim.Render(fmt.Sprintf("  Messages: %d", len(m.messages))) + "\n")
+	sb.WriteString(m.theme.TextDim.Render(fmt.Sprintf("  History: %d msgs", len(m.agentMessages))) + "\n")
+	sb.WriteString(m.theme.DividerLine.Render("  "+safeRepeat("─", m.sidebarWidth-4)) + "\n")
+
+	// Working directory
+	sb.WriteString(m.theme.Info.Bold(true).Render("  Directory") + "\n")
+	cwd := m.getCwd()
+	if len(cwd) > m.sidebarWidth-4 {
+		cwd = "..." + cwd[len(cwd)-m.sidebarWidth+7:]
 	}
+	sb.WriteString(m.theme.TextDim.Render("  "+cwd) + "\n")
+
 	return sb.String()
 }
 
@@ -566,6 +578,24 @@ func (m Model) renderTaskPanel(maxLines int) string {
 		sb.WriteString(m.theme.Warn.Render("  ⟳ Processing...\n"))
 	}
 	sb.WriteString(m.theme.TextDim.Render("  No tasks queued.\n"))
+	return sb.String()
+}
+
+func (m Model) renderLogsPanel(maxLines int) string {
+	var sb strings.Builder
+	sb.WriteString(m.theme.Info.Bold(true).Render("  Logs") + "\n")
+	sb.WriteString(m.theme.DividerLine.Render("  "+safeRepeat("─", m.sidebarWidth-4)) + "\n")
+	if len(m.logLines) == 0 {
+		sb.WriteString(m.theme.TextDim.Render("  No log entries.\n"))
+	} else {
+		start := 0
+		if len(m.logLines) > maxLines-2 {
+			start = len(m.logLines) - maxLines + 2
+		}
+		for _, line := range m.logLines[start:] {
+			sb.WriteString(m.theme.TextDim.Render("  "+line) + "\n")
+		}
+	}
 	return sb.String()
 }
 
@@ -605,6 +635,8 @@ func (m Model) renderChatArea(width, height int) string {
 			lines = append(lines, m.renderAssistantMsg(msg, width)...)
 		case "tool":
 			lines = append(lines, m.renderToolMsg(msg, width))
+		case "thinking":
+			lines = append(lines, m.theme.ThinkingMessage.Render("  💭 "+msg.content))
 		case "system":
 			lines = append(lines, m.theme.SystemMessage.Render("  ✦ "+msg.content))
 		}
@@ -688,7 +720,7 @@ func (m Model) renderWelcome(width, height int) string {
 		"  /provider   Configure providers   /pet        Your pet",
 		"  /model      Switch model          /session    Sessions",
 		"",
-		"  Ctrl+S  Sidebar  Ctrl+L  Logs  Ctrl+P  Commands  Tab  Tabs",
+		"  Ctrl+B  Sidebar  Ctrl+L  Logs  Ctrl+P  Commands  Tab  Tabs",
 		"",
 		fmt.Sprintf("  Provider: %s", m.provider.Name()),
 	}
@@ -725,7 +757,7 @@ func (m Model) renderInputArea() string {
 func (m Model) renderStatusBar() string {
 	left := fmt.Sprintf(" %s ", m.provider.Name())
 	center := fmt.Sprintf(" Turns:%d ", m.turnCount)
-	right := " Ctrl+C:Quit "
+	right := " Ctrl+B:Sidebar │ Ctrl+L:Logs │ Ctrl+C:Quit "
 	leftLen := len(left)
 	centerLen := len(center)
 	rightLen := len(right)

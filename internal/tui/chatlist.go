@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ChatItem represents a single rendered chat message with caching.
@@ -13,10 +14,10 @@ type ChatItem struct {
 	content   string
 	tool      string
 	timestamp time.Time
-	finished  bool // Once true, the rendered output is frozen
+	finished  bool
+	expanded  bool // for collapsible tool output
 
-	// Cached rendered output
-	cacheMu    sync.RWMutex
+	cacheMu     sync.RWMutex
 	cachedWidth int
 	cachedLines []string
 }
@@ -28,7 +29,7 @@ func NewChatItem(role, content, tool string, timestamp time.Time) *ChatItem {
 		content:   content,
 		tool:      tool,
 		timestamp: timestamp,
-		finished:  true, // Non-streaming items are immediately finished
+		finished:  true,
 	}
 }
 
@@ -37,12 +38,20 @@ func (ci *ChatItem) SetContent(content string) {
 	ci.cacheMu.Lock()
 	defer ci.cacheMu.Unlock()
 	ci.content = content
-	ci.cachedLines = nil // Invalidate cache
+	ci.cachedLines = nil
 }
 
 // MarkFinished freezes the rendered output.
 func (ci *ChatItem) MarkFinished() {
 	ci.finished = true
+}
+
+// ToggleExpanded toggles collapsible tool output.
+func (ci *ChatItem) ToggleExpanded() {
+	ci.cacheMu.Lock()
+	defer ci.cacheMu.Unlock()
+	ci.expanded = !ci.expanded
+	ci.cachedLines = nil
 }
 
 // Render returns the cached or freshly rendered lines for this item.
@@ -55,7 +64,6 @@ func (ci *ChatItem) Render(theme *Theme, width int) []string {
 	}
 	ci.cacheMu.RUnlock()
 
-	// Render fresh
 	lines := ci.renderFresh(theme, width)
 
 	ci.cacheMu.Lock()
@@ -69,45 +77,111 @@ func (ci *ChatItem) Render(theme *Theme, width int) []string {
 }
 
 func (ci *ChatItem) renderFresh(theme *Theme, width int) []string {
-	var lines []string
-
 	switch ci.role {
 	case "user":
-		timeStr := ci.timestamp.Format("15:04:05")
-		header := theme.UserMsgHeader.Render(fmt.Sprintf(" ▸ YOU [%s]", timeStr))
-		content := theme.UserMessage.Render("   " + ci.content)
-		lines = []string{header, content}
-
+		return ci.renderUser(theme, width)
 	case "assistant":
-		timeStr := ci.timestamp.Format("15:04:05")
-		header := theme.AssistantMsgHeader.Render(fmt.Sprintf(" ▸ SAVANT [%s]", timeStr))
-
-		// Word-wrap content to width
-		wrapped := wordWrap(ci.content, width-6)
-		contentLines := make([]string, 0, len(wrapped)+1)
-		contentLines = append(contentLines, header)
-		for _, line := range wrapped {
-			contentLines = append(contentLines, theme.AssistantMessage.Render("   "+line))
-		}
-		lines = contentLines
-
+		return ci.renderAssistant(theme, width)
 	case "tool":
-		icon := theme.ToolIcon.Render("⚡")
-		name := theme.ToolName.Render(ci.tool)
-		content := ci.content
-		if width > 18 && len(content) > width-18 {
-			content = content[:width-21] + "..."
-		}
-		lines = []string{theme.ToolMessage.Render(fmt.Sprintf("   %s %s: %s", icon, name, content))}
-
+		return ci.renderTool(theme, width)
+	case "thinking":
+		return ci.renderThinking(theme, width)
 	case "system":
-		lines = []string{theme.SystemMessage.Render("  ✦ " + ci.content)}
-
+		return []string{theme.SystemMessage.Render("  ✦ " + ci.content)}
 	default:
-		lines = []string{ci.content}
+		return []string{ci.content}
+	}
+}
+
+func (ci *ChatItem) renderUser(theme *Theme, width int) []string {
+	timeStr := ci.timestamp.Format("15:04")
+	header := theme.UserMsgHeader.Render(fmt.Sprintf(" YOU [%s]", timeStr))
+	wrapped := wordWrap(ci.content, width-6)
+	result := []string{header}
+	for _, line := range wrapped {
+		result = append(result, theme.UserMessage.Render("  "+line))
+	}
+	return result
+}
+
+func (ci *ChatItem) renderAssistant(theme *Theme, width int) []string {
+	timeStr := ci.timestamp.Format("15:04")
+	header := theme.AssistantMsgHeader.Render(fmt.Sprintf(" SAVANT [%s]", timeStr))
+	wrapped := wordWrap(ci.content, width-6)
+	result := []string{header}
+	for _, line := range wrapped {
+		result = append(result, theme.AssistantMessage.Render("  "+line))
+	}
+	return result
+}
+
+func (ci *ChatItem) renderThinking(theme *Theme, width int) []string {
+	wrapped := wordWrap(ci.content, width-6)
+	result := []string{}
+	for _, line := range wrapped {
+		result = append(result, theme.ThinkingMessage.Render("  💭 "+line))
+	}
+	return result
+}
+
+// renderTool renders tool output in a bordered box with tool-specific colors.
+func (ci *ChatItem) renderTool(theme *Theme, width int) []string {
+	borderStyle := theme.ToolBorder(ci.tool)
+	boxWidth := width - 4
+	if boxWidth < 20 {
+		boxWidth = 20
+	}
+	innerWidth := boxWidth - 4
+	if innerWidth < 10 {
+		innerWidth = 10
 	}
 
-	return lines
+	// Top border with tool name
+	icon := "⚡"
+	headerText := fmt.Sprintf("%s %s", icon, ci.tool)
+	topBorder := borderStyle.Render("  ┌─ " + headerText + " " + strings.Repeat("─", max(1, innerWidth-len(headerText)-2)) + "┐")
+
+	// Content lines
+	contentLines := strings.Split(ci.content, "\n")
+	maxLines := 10
+	if ci.expanded {
+		maxLines = len(contentLines)
+	}
+
+	var displayLines []string
+	truncated := false
+	for i, line := range contentLines {
+		if i >= maxLines {
+			truncated = true
+			break
+		}
+		// Truncate long lines
+		runeCount := utf8.RuneCountInString(line)
+		if runeCount > innerWidth {
+			runes := []rune(line)
+			line = string(runes[:innerWidth-3]) + "..."
+		}
+		// Pad to inner width
+		padding := innerWidth - utf8.RuneCountInString(line)
+		if padding > 0 {
+			line += strings.Repeat(" ", padding)
+		}
+		displayLines = append(displayLines, borderStyle.Render("  │ ") + theme.TextPrimary.Render(line) + borderStyle.Render(" │"))
+	}
+
+	// Bottom border with collapse/expand indicator
+	bottomText := ""
+	if truncated {
+		bottomText = fmt.Sprintf(" (%d more lines, Enter to expand)", len(contentLines)-maxLines)
+	} else if ci.expanded && len(contentLines) > 10 {
+		bottomText = " (Enter to collapse)"
+	}
+	bottomBorder := borderStyle.Render("  └" + strings.Repeat("─", max(1, boxWidth-4-len(bottomText))) + bottomText + "┘")
+
+	result := []string{topBorder}
+	result = append(result, displayLines...)
+	result = append(result, bottomBorder)
+	return result
 }
 
 // IsFinished returns whether this item's content is frozen.
@@ -117,9 +191,8 @@ func (ci *ChatItem) IsFinished() bool {
 
 // ChatList manages a lazy-rendered, cached list of chat messages.
 type ChatList struct {
-	items      []*ChatItem
-	scrollPos  int
-	totalLines int
+	items     []*ChatItem
+	scrollPos int
 }
 
 // NewChatList creates a new chat list.
@@ -158,61 +231,6 @@ func (cl *ChatList) ScrollDown() {
 	cl.scrollPos++
 }
 
-// ScrollToBottom scrolls to the latest messages.
-func (cl *ChatList) ScrollToBottom(height int) {
-	total := cl.countLines(nil, 0)
-	if total > height {
-		cl.scrollPos = total - height
-	} else {
-		cl.scrollPos = 0
-	}
-}
-
-// Render renders the visible portion of the chat list.
-func (cl *ChatList) Render(theme *Theme, width, height int) []string {
-	// Render all items and collect lines
-	var allLines []string
-	for _, item := range cl.items {
-		lines := item.Render(theme, width)
-		allLines = append(allLines, lines...)
-	}
-
-	// Apply scroll offset
-	if cl.scrollPos > 0 && cl.scrollPos < len(allLines) {
-		allLines = allLines[cl.scrollPos:]
-	}
-
-	// Truncate to height
-	if len(allLines) > height {
-		allLines = allLines[len(allLines)-height:]
-	}
-
-	// Auto-scroll to bottom if not manually scrolled
-	if !itemStreaming(cl.items) && cl.scrollPos == 0 {
-		// Auto-scroll is handled by taking the last N lines
-	}
-
-	return allLines
-}
-
-func (cl *ChatList) countLines(theme *Theme, width int) int {
-	total := 0
-	for _, item := range cl.items {
-		lines := item.Render(theme, width)
-		total += len(lines)
-	}
-	return total
-}
-
-func itemStreaming(items []*ChatItem) bool {
-	for _, item := range items {
-		if !item.finished {
-			return true
-		}
-	}
-	return false
-}
-
 // Items returns the list of chat items.
 func (cl *ChatList) Items() []*ChatItem {
 	return cl.items
@@ -229,7 +247,7 @@ func (cl *ChatList) Count() int {
 	return len(cl.items)
 }
 
-// wordWrap wraps text to fit within the given width.
+// wordWrap wraps text to fit within the given width, using rune count.
 func wordWrap(text string, width int) []string {
 	if width <= 0 {
 		return []string{text}
@@ -239,18 +257,19 @@ func wordWrap(text string, width int) []string {
 	var result []string
 
 	for _, line := range lines {
-		if len(line) <= width {
+		if utf8.RuneCountInString(line) <= width {
 			result = append(result, line)
 			continue
 		}
 
-		// Wrap long lines
 		words := strings.Fields(line)
 		current := ""
 		for _, word := range words {
+			currentLen := utf8.RuneCountInString(current)
+			wordLen := utf8.RuneCountInString(word)
 			if current == "" {
 				current = word
-			} else if len(current)+1+len(word) <= width {
+			} else if currentLen+1+wordLen <= width {
 				current += " " + word
 			} else {
 				result = append(result, current)
@@ -266,41 +285,4 @@ func wordWrap(text string, width int) []string {
 		return []string{""}
 	}
 	return result
-}
-
-// RenderChatList is a convenience function for rendering the chat list in the TUI.
-func RenderChatList(items []*ChatItem, theme *Theme, width, height int, streaming string, spinnerFrame int) string {
-	var allLines []string
-
-	// Render header
-	header := safeRepeat("═", max(1, width-12))
-	allLines = append(allLines, theme.ChatHeader.Render(" ╔═ CHAT "+header+"╗"))
-
-	// Render all items
-	for _, item := range items {
-		lines := item.Render(theme, width)
-		allLines = append(allLines, lines...)
-	}
-
-	// Render streaming content
-	if streaming != "" {
-		spinner := theme.Spinner(spinnerFrame)
-		header := theme.AssistantMsgHeader.Render(fmt.Sprintf(" ▸ SAVANT %s", spinner))
-		allLines = append(allLines, header)
-		wrapped := wordWrap(streaming, width-6)
-		for _, line := range wrapped {
-			allLines = append(allLines, theme.AssistantMessage.Render("   "+line+"▌"))
-		}
-	}
-
-	// Render footer
-	footer := safeRepeat("═", max(1, width-3))
-	allLines = append(allLines, theme.ChatHeader.Render(" ╚"+footer+"╝"))
-
-	// Apply viewport
-	if len(allLines) > height {
-		allLines = allLines[len(allLines)-height:]
-	}
-
-	return strings.Join(allLines, "\n")
 }

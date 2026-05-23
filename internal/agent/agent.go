@@ -14,21 +14,24 @@ import (
 
 // Event represents an event from the agent loop.
 type Event struct {
-	Type    EventType
-	Content string
-	Tool    string
-	Error   error
+	Type     EventType
+	Content  string
+	Tool     string
+	Error    error
+	Messages []provider.ChatMessage // For EventHistoryUpdate
 }
 
 // EventType categorizes agent events.
 type EventType int
 
 const (
-	EventText       EventType = iota // Model produced text
-	EventToolCall                    // Model wants to call a tool
-	EventToolResult                  // Tool returned a result
-	EventDone                        // Agent loop finished
-	EventError                       // An error occurred
+	EventText          EventType = iota // Model produced text
+	EventThinking                       // Model produced reasoning/thinking
+	EventToolCall                       // Model wants to call a tool
+	EventToolResult                     // Tool returned a result
+	EventDone                           // Agent loop finished
+	EventError                          // An error occurred
+	EventHistoryUpdate                  // Conversation history update
 )
 
 // Agent runs the agentic loop.
@@ -37,12 +40,10 @@ type Agent struct {
 	registry *tools.Registry
 	messages []provider.ChatMessage
 	maxTurns int
-	events   chan<- Event // channel to send events to the TUI
+	events   chan<- Event
 }
 
 // NewAgent creates a new agent.
-// The events channel receives real-time events from the agent loop.
-// The messages parameter provides prior conversation history for continuity.
 func NewAgent(p provider.Provider, registry *tools.Registry, maxTurns int, events chan<- Event, priorMessages []provider.ChatMessage) *Agent {
 	return &Agent{
 		provider: p,
@@ -76,6 +77,15 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 
 	// Agent loop
 	for turn := 0; turn < a.maxTurns; turn++ {
+		// Context compaction check
+		cm := NewContextManager(128000, 0.80, nil)
+		if cm.NeedsCompaction(a.messages) {
+			compacted, err := cm.Compact(ctx, a.messages)
+			if err == nil {
+				a.messages = compacted
+			}
+		}
+
 		req := provider.ChatRequest{
 			Messages: a.messages,
 			Tools:    toolDefs,
@@ -89,23 +99,29 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 
 		// Collect streaming response
 		var (
-			fullContent string
-			toolCalls   []provider.ToolCall
-			streamErr   error
+			fullContent    string
+			fullReasoning  string
+			toolCalls      []provider.ToolCall
+			streamErr      error
 		)
 
 		for {
 			chunk, err := stream.Next()
 			if err != nil {
 				if errors.Is(err, io.EOF) {
-					break // Normal end of stream
+					break
 				}
-				// Real error - capture it
 				streamErr = fmt.Errorf("stream read error: %w", err)
 				break
 			}
 
 			for _, choice := range chunk.Choices {
+				// Handle reasoning/thinking content
+				if choice.Delta.Reasoning != "" {
+					fullReasoning += choice.Delta.Reasoning
+					a.emit(Event{Type: EventThinking, Content: choice.Delta.Reasoning})
+				}
+
 				if choice.Delta.Content != "" {
 					fullContent += choice.Delta.Content
 					a.emit(Event{Type: EventText, Content: choice.Delta.Content})
@@ -113,10 +129,8 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 				if len(choice.Delta.ToolCalls) > 0 {
 					for _, tc := range choice.Delta.ToolCalls {
 						if tc.ID != "" {
-							// New tool call
 							toolCalls = append(toolCalls, tc)
 						} else if len(toolCalls) > 0 {
-							// Delta for existing tool call - append arguments
 							last := &toolCalls[len(toolCalls)-1]
 							last.Function.Arguments = append(last.Function.Arguments, tc.Function.Arguments...)
 						}
@@ -126,7 +140,6 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 		}
 		stream.Close()
 
-		// If stream had an error, surface it
 		if streamErr != nil {
 			a.emit(Event{Type: EventError, Error: streamErr})
 			return streamErr
@@ -134,21 +147,22 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 
 		// If no tool calls, the model is done
 		if len(toolCalls) == 0 {
-			a.messages = append(a.messages, provider.ChatMessage{
+			msg := provider.ChatMessage{
 				Role:    "assistant",
 				Content: fullContent,
-			})
+			}
+			a.messages = append(a.messages, msg)
 			a.emit(Event{Type: EventDone})
+			a.emit(Event{Type: EventHistoryUpdate, Messages: a.Messages()})
 			return nil
 		}
 
 		// Add assistant message with tool calls
-		assistantMsg := provider.ChatMessage{
+		a.messages = append(a.messages, provider.ChatMessage{
 			Role:      "assistant",
 			Content:   fullContent,
 			ToolCalls: toolCalls,
-		}
-		a.messages = append(a.messages, assistantMsg)
+		})
 
 		// Execute tool calls (concurrently)
 		var calls []tools.ToolCall
@@ -185,12 +199,12 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 	}
 
 	a.emit(Event{Type: EventDone})
+	a.emit(Event{Type: EventHistoryUpdate, Messages: a.Messages()})
 	return nil
 }
 
 func (a *Agent) emit(e Event) {
 	if a.events != nil {
-		// Non-blocking send - if channel is full, drop the event
 		select {
 		case a.events <- e:
 		default:

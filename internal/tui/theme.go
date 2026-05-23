@@ -1,4 +1,4 @@
-// Package tui implements the Bubble Tea v2 terminal UI with cyberpunk aesthetics.
+// Package tui implements the Bubble Tea v2 terminal UI with cyberpunk neon aesthetics.
 package tui
 
 import (
@@ -9,49 +9,46 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// Cyberpunk color palette from the architecture doc.
+// Neon-on-black color palette.
 var (
-	// Void Indigo - primary background
-	VoidIndigo = color.RGBA{13, 2, 33, 255} // #0D0221
+	// Near-black primary background
+	Background = color.RGBA{10, 10, 10, 255} // #0A0A0A
 
-	// HyperCyan - primary accent
-	HyperCyan = color.RGBA{0, 240, 255, 255} // #00F0FF
-
-	// SolarOrange - secondary accent
-	SolarOrange = color.RGBA{255, 107, 53, 255} // #FF6B35
-
-	// Text color
-	TextPrimary = color.RGBA{224, 224, 224, 255} // #E0E0E0
+	// Surface/panel background
+	Surface = color.RGBA{20, 20, 20, 255} // #141414
 
 	// Border color
-	BorderColor = color.RGBA{26, 26, 46, 255} // #1A1A2E
+	BorderColor = color.RGBA{34, 34, 34, 255} // #222222
 
-	// Success green
-	SuccessGreen = color.RGBA{0, 255, 65, 255} // #00FF41
+	// Primary text
+	TextPrimary = color.RGBA{224, 224, 224, 255} // #E0E0E0
 
-	// Error red
-	ErrorRed = color.RGBA{255, 0, 64, 255} // #FF0040
+	// Dim/secondary text
+	TextDim = color.RGBA{102, 102, 102, 255} // #666666
 
-	// Dim text
-	TextDim = color.RGBA{128, 128, 160, 255} // #8080A0
+	// Neon pink - user messages, input prompt
+	NeonPink = color.RGBA{255, 0, 255, 255} // #FF00FF
 
-	// Panel background
-	PanelBg = color.RGBA{15, 5, 40, 255} // #0F0528
+	// Neon cyan - assistant messages, info, status
+	NeonCyan = color.RGBA{0, 255, 255, 255} // #00FFFF
 
-	// Deep panel
-	DeepPanelBg = color.RGBA{10, 2, 28, 255} // #0A021C
+	// Neon green - tool output, success
+	NeonGreen = color.RGBA{0, 255, 65, 255} // #00FF41
 
-	// Highlight background
-	HighlightBg = color.RGBA{0, 240, 255, 30} // HyperCyan at 12%
+	// Neon yellow - warnings, active items, thinking
+	NeonYellow = color.RGBA{240, 255, 0, 255} // #F0FF00
 
-	// Neon purple (for accents)
-	NeonPurple = color.RGBA{170, 0, 255, 255} // #AA00FF
+	// Neon red - errors, critical
+	NeonRed = color.RGBA{255, 0, 64, 255} // #FF0040
 
-	// Neon pink
-	NeonPink = color.RGBA{255, 0, 170, 255} // #FF00AA
+	// Neon orange - tool names, secondary accent
+	NeonOrange = color.RGBA{255, 107, 53, 255} // #FF6B35
+
+	// White - user message text
+	White = color.RGBA{255, 255, 255, 255} // #FFFFFF
 )
 
-// Theme holds all styled components for the cyberpunk aesthetic.
+// Theme holds all styled components for the neon cyberpunk aesthetic.
 type Theme struct {
 	// Base
 	Base lipgloss.Style
@@ -60,7 +57,7 @@ type Theme struct {
 	TitleBar       lipgloss.Style
 	TitleLogo      lipgloss.Style
 	TitleSep       lipgloss.Style
-	ProviderBadgeLabel  lipgloss.Style
+	ProviderBadgeLabel lipgloss.Style
 
 	// Chat
 	ChatHeader         lipgloss.Style
@@ -73,6 +70,7 @@ type Theme struct {
 	ToolName           lipgloss.Style
 	ToolPanelHeader    lipgloss.Style
 	SystemMessage      lipgloss.Style
+	ThinkingMessage    lipgloss.Style
 
 	// Input
 	InputBox     lipgloss.Style
@@ -87,7 +85,10 @@ type Theme struct {
 	TabInactive   lipgloss.Style
 
 	// Status
-	StatusBar lipgloss.Style
+	StatusBar   lipgloss.Style
+	StatusLabel lipgloss.Style
+	StatusValue lipgloss.Style
+	StatusSep   lipgloss.Style
 
 	// Log
 	LogHeader lipgloss.Style
@@ -100,7 +101,7 @@ type Theme struct {
 	Info      lipgloss.Style
 	Success   lipgloss.Style
 	HelpText  lipgloss.Style
-	DividerLine   lipgloss.Style
+	DividerLine lipgloss.Style
 
 	// Dialog system
 	Dialog      lipgloss.Style
@@ -110,58 +111,70 @@ type Theme struct {
 	// Text aliases
 	TextPrimary lipgloss.Style
 
+	// Permission
+	PermApprove lipgloss.Style
+	PermDeny    lipgloss.Style
+
+	// Tool box borders
+	ToolBorderGreen  lipgloss.Style
+	ToolBorderCyan   lipgloss.Style
+	ToolBorderYellow lipgloss.Style
+	ToolBorderOrange lipgloss.Style
+
 	// Glitch frames for logo
 	glitchFrames []string
 }
 
-// NewCyberpunkTheme creates the cyberpunk theme with all styles.
+// NewCyberpunkTheme creates the neon-on-black theme.
 func NewCyberpunkTheme() *Theme {
 	t := &Theme{
 		Base: lipgloss.NewStyle().
 			Foreground(TextPrimary).
-			Background(VoidIndigo),
+			Background(Background),
 
 		TitleBar: lipgloss.NewStyle().
-			Background(BorderColor).
+			Background(Surface).
 			Padding(0, 1),
 
 		TitleLogo: lipgloss.NewStyle().
-			Foreground(HyperCyan).
+			Foreground(NeonCyan).
 			Bold(true).
-			Background(BorderColor),
+			Background(Surface),
 
 		TitleSep: lipgloss.NewStyle().
-			Foreground(HyperCyan).
-			Background(BorderColor),
+			Foreground(BorderColor).
+			Background(Surface),
 
 		ProviderBadgeLabel: lipgloss.NewStyle().
-			Foreground(VoidIndigo).
-			Background(HyperCyan).
+			Foreground(Background).
+			Background(NeonCyan).
 			Bold(true).
 			Padding(0, 1),
 
 		ChatHeader: lipgloss.NewStyle().
-			Foreground(HyperCyan).
+			Foreground(NeonCyan).
 			Bold(true),
 
+		// User messages: pink left border, white text
 		UserMsgHeader: lipgloss.NewStyle().
-			Foreground(HyperCyan).
+			Foreground(White).
 			Bold(true).
 			BorderLeft(true).
 			BorderStyle(lipgloss.ThickBorder()).
-			BorderForeground(HyperCyan).
+			BorderForeground(NeonPink).
 			PaddingLeft(1),
 
+		// Assistant messages: cyan left border, gray text
 		AssistantMsgHeader: lipgloss.NewStyle().
-			Foreground(SolarOrange).
+			Foreground(NeonCyan).
 			Bold(true).
 			BorderLeft(true).
 			BorderStyle(lipgloss.ThickBorder()).
-			BorderForeground(SolarOrange).
+			BorderForeground(NeonCyan).
 			PaddingLeft(1),
 
 		UserMessage: lipgloss.NewStyle().
-			Foreground(TextPrimary).
+			Foreground(White).
 			PaddingLeft(4),
 
 		AssistantMessage: lipgloss.NewStyle().
@@ -169,69 +182,85 @@ func NewCyberpunkTheme() *Theme {
 			PaddingLeft(4),
 
 		ToolMessage: lipgloss.NewStyle().
-			Foreground(TextDim).
-			Italic(true).
+			Foreground(TextPrimary).
 			PaddingLeft(2),
 
 		ToolIcon: lipgloss.NewStyle().
-			Foreground(SolarOrange).
+			Foreground(NeonOrange).
 			Bold(true),
 
 		ToolName: lipgloss.NewStyle().
-			Foreground(NeonPurple).
+			Foreground(NeonOrange).
 			Bold(true),
 
 		ToolPanelHeader: lipgloss.NewStyle().
-			Foreground(SolarOrange).
+			Foreground(NeonGreen).
 			Bold(true),
 
 		SystemMessage: lipgloss.NewStyle().
-			Foreground(SolarOrange).
-			Bold(true),
+			Foreground(TextDim).
+			Italic(true),
+
+		ThinkingMessage: lipgloss.NewStyle().
+			Foreground(NeonYellow).
+			Italic(true),
 
 		InputBox: lipgloss.NewStyle().
-			Background(BorderColor).
+			Background(Surface).
 			Padding(0, 1),
 
 		InputPrompt: lipgloss.NewStyle().
-			Foreground(HyperCyan).
+			Foreground(NeonPink).
 			Bold(true).
-			Background(BorderColor),
+			Background(Surface),
 
 		InputText: lipgloss.NewStyle().
 			Foreground(TextPrimary).
-			Background(BorderColor),
+			Background(Surface),
 
 		InputWorking: lipgloss.NewStyle().
-			Foreground(SolarOrange).
-			Background(BorderColor).
+			Foreground(NeonYellow).
+			Background(Surface).
 			Bold(true).
 			Padding(0, 1),
 
 		Cursor: lipgloss.NewStyle().
-			Foreground(HyperCyan).
+			Foreground(NeonCyan).
 			Bold(true).
-			Background(BorderColor),
+			Background(Surface),
 
 		SidebarHeader: lipgloss.NewStyle().
-			Foreground(HyperCyan).
+			Foreground(NeonCyan).
 			Bold(true),
 
 		TabActive: lipgloss.NewStyle().
-			Foreground(VoidIndigo).
-			Background(HyperCyan).
+			Foreground(Background).
+			Background(NeonCyan).
 			Bold(true).
 			Padding(0, 1),
 
 		TabInactive: lipgloss.NewStyle().
 			Foreground(TextDim).
-			Background(PanelBg).
+			Background(Surface).
 			Padding(0, 1),
 
 		StatusBar: lipgloss.NewStyle().
 			Foreground(TextPrimary).
-			Background(BorderColor).
+			Background(Surface).
 			Padding(0, 1),
+
+		StatusLabel: lipgloss.NewStyle().
+			Foreground(TextDim).
+			Background(Surface),
+
+		StatusValue: lipgloss.NewStyle().
+			Foreground(NeonCyan).
+			Bold(true).
+			Background(Surface),
+
+		StatusSep: lipgloss.NewStyle().
+			Foreground(BorderColor).
+			Background(Surface),
 
 		LogHeader: lipgloss.NewStyle().
 			Foreground(TextDim).
@@ -241,20 +270,20 @@ func NewCyberpunkTheme() *Theme {
 			Foreground(TextDim),
 
 		TextMuted: lipgloss.NewStyle().
-			Foreground(color.RGBA{96, 96, 120, 255}),
+			Foreground(color.RGBA{80, 80, 80, 255}),
 
 		Warn: lipgloss.NewStyle().
-			Foreground(SolarOrange),
+			Foreground(NeonYellow),
 
 		Error: lipgloss.NewStyle().
-			Foreground(ErrorRed).
+			Foreground(NeonRed).
 			Bold(true),
 
 		Info: lipgloss.NewStyle().
-			Foreground(HyperCyan),
+			Foreground(NeonCyan),
 
 		Success: lipgloss.NewStyle().
-			Foreground(SuccessGreen).
+			Foreground(NeonGreen).
 			Bold(true),
 
 		HelpText: lipgloss.NewStyle().
@@ -266,9 +295,9 @@ func NewCyberpunkTheme() *Theme {
 
 		Dialog: lipgloss.NewStyle().
 			Foreground(TextPrimary).
-			Background(PanelBg).
+			Background(Surface).
 			Border(lipgloss.DoubleBorder()).
-			BorderForeground(HyperCyan).
+			BorderForeground(NeonCyan).
 			Padding(1, 2),
 
 		Button: lipgloss.NewStyle().
@@ -279,13 +308,37 @@ func NewCyberpunkTheme() *Theme {
 			BorderForeground(TextDim),
 
 		ButtonFocus: lipgloss.NewStyle().
-			Foreground(VoidIndigo).
-			Background(HyperCyan).
+			Foreground(Background).
+			Background(NeonCyan).
 			Bold(true).
 			Padding(0, 2),
 
 		TextPrimary: lipgloss.NewStyle().
 			Foreground(TextPrimary),
+
+		PermApprove: lipgloss.NewStyle().
+			Foreground(Background).
+			Background(NeonGreen).
+			Bold(true).
+			Padding(0, 2),
+
+		PermDeny: lipgloss.NewStyle().
+			Foreground(Background).
+			Background(NeonRed).
+			Bold(true).
+			Padding(0, 2),
+
+		ToolBorderGreen: lipgloss.NewStyle().
+			Foreground(NeonGreen),
+
+		ToolBorderCyan: lipgloss.NewStyle().
+			Foreground(NeonCyan),
+
+		ToolBorderYellow: lipgloss.NewStyle().
+			Foreground(NeonYellow),
+
+		ToolBorderOrange: lipgloss.NewStyle().
+			Foreground(NeonOrange),
 	}
 
 	// Glitch logo frames
@@ -308,12 +361,11 @@ func (t *Theme) Logo() string {
 
 // GlitchLogo returns the logo with optional glitch effect.
 func (t *Theme) GlitchLogo(frame int, glitch bool) string {
-	logo := GetLogo(100) // Use full-size for title bar
+	logo := GetLogo(100)
 	if !glitch {
 		return t.TitleLogo.Render(logo)
 	}
 
-	// Glitch: shift random characters on one line
 	lines := strings.Split(logo, "\n")
 	glitched := make([]string, len(lines))
 	copy(glitched, lines)
@@ -334,24 +386,22 @@ func (t *Theme) ProviderBadge(name string) string {
 // ProviderBadgeStyle returns the badge style.
 func (t *Theme) ProviderBadgeStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		Foreground(VoidIndigo).
-		Background(HyperCyan).
+		Foreground(Background).
+		Background(NeonCyan).
 		Bold(true).
 		Padding(0, 1)
 }
 
-// AnimatedSeparator returns a cyberpunk-styled separator line.
+// AnimatedSeparator returns a neon-styled separator line.
 func (t *Theme) AnimatedSeparator(width int, tick int) string {
 	if width <= 0 {
 		return ""
 	}
 
-	// Animated pattern
-	pattern := "═╪═"
+	pattern := "─│─"
 	repeat := width/len(pattern) + 1
 	full := strings.Repeat(pattern, repeat)
 
-	// Animate: shift by tick
 	offset := tick % len(pattern)
 	if offset > 0 && offset < len(full) {
 		full = full[offset:]
@@ -378,5 +428,23 @@ func (t *Theme) DividerColor() lipgloss.Style {
 // Spinner returns an animated spinner character.
 func (t *Theme) Spinner(frame int) string {
 	frames := []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
-	return t.Info.Render(frames[frame%len(frames)])
+	return t.Warn.Render(frames[frame%len(frames)])
+}
+
+// ToolBorder returns the appropriate border style for a tool type.
+func (t *Theme) ToolBorder(toolName string) lipgloss.Style {
+	switch toolName {
+	case "bash":
+		return t.ToolBorderGreen
+	case "read":
+		return t.ToolBorderCyan
+	case "edit", "write":
+		return t.ToolBorderOrange
+	case "grep":
+		return t.ToolBorderYellow
+	case "glob":
+		return t.ToolBorderGreen
+	default:
+		return t.ToolBorderGreen
+	}
 }

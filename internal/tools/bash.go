@@ -14,6 +14,7 @@ func NewBashTool() *BashTool { return &BashTool{} }
 
 func (t *BashTool) Name() string        { return "bash" }
 func (t *BashTool) Description() string { return "Execute a shell command and return its output." }
+func (t *BashTool) Kind() ToolKind      { return KindExecute }
 
 func (t *BashTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{

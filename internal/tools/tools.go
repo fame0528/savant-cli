@@ -7,6 +7,16 @@ import (
 	"sync"
 )
 
+// ToolKind categorizes tools by their side-effect profile.
+type ToolKind int
+
+const (
+	KindRead    ToolKind = iota // Safe for parallel (read, glob, grep)
+	KindSearch                  // Safe for parallel (search operations)
+	KindWrite                   // Has side effects (edit, write)
+	KindExecute                 // Has side effects (bash)
+)
+
 // Tool is the interface all built-in tools implement.
 type Tool interface {
 	// Name returns the tool's name (sent to the model).
@@ -17,6 +27,9 @@ type Tool interface {
 
 	// Parameters returns the JSON Schema for the tool's parameters.
 	Parameters() json.RawMessage
+
+	// Kind returns the tool's side-effect profile for auto-parallelization.
+	Kind() ToolKind
 
 	// Execute runs the tool with the given arguments.
 	Execute(ctx context.Context, args json.RawMessage) (string, error)
@@ -31,9 +44,10 @@ type ToolCall struct {
 
 // ToolResult represents the result of executing a tool.
 type ToolResult struct {
-	ToolCallID string `json:"tool_call_id"`
-	Content    string `json:"content"`
-	IsError    bool   `json:"is_error"`
+	ToolCallID string    `json:"tool_call_id"`
+	Content    string    `json:"content"`
+	IsError    bool      `json:"is_error"`
+	FollowUp   *ToolCall `json:"follow_up,omitempty"` // Tail tool call
 }
 
 // Registry holds all available tools.

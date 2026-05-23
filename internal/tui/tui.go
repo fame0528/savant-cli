@@ -344,7 +344,12 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 
 	m.evtChan = make(chan agent.Event, 64)
 	m.ctx, m.cancel = context.WithCancel(context.Background())
-	a := agent.NewAgent(m.provider, m.registry, m.maxTurns, m.evtChan, m.agentMessages)
+	a, err := agent.NewAgent(m.provider, m.registry, m.maxTurns, m.evtChan, m.agentMessages)
+	if err != nil {
+		m.err = err
+		m.working = false
+		return m, nil
+	}
 
 	go func() {
 		a.Run(m.ctx, prompt)

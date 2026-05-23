@@ -17,6 +17,7 @@ func NewGrepTool() *GrepTool { return &GrepTool{} }
 
 func (t *GrepTool) Name() string        { return "grep" }
 func (t *GrepTool) Description() string { return "Search file contents by regex or literal text." }
+func (t *GrepTool) Kind() ToolKind      { return KindSearch }
 
 func (t *GrepTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{

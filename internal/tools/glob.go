@@ -15,6 +15,7 @@ func NewGlobTool() *GlobTool { return &GlobTool{} }
 
 func (t *GlobTool) Name() string        { return "glob" }
 func (t *GlobTool) Description() string { return "Find files matching a glob pattern. Supports ** for recursive matching." }
+func (t *GlobTool) Kind() ToolKind      { return KindSearch }
 
 func (t *GlobTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{

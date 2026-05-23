@@ -14,6 +14,7 @@ func NewWriteTool() *WriteTool { return &WriteTool{} }
 
 func (t *WriteTool) Name() string        { return "write" }
 func (t *WriteTool) Description() string { return "Create or overwrite a file with the given content." }
+func (t *WriteTool) Kind() ToolKind      { return KindWrite }
 
 func (t *WriteTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{

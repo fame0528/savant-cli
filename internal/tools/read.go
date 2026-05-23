@@ -15,6 +15,7 @@ func NewReadTool() *ReadTool { return &ReadTool{} }
 
 func (t *ReadTool) Name() string        { return "read" }
 func (t *ReadTool) Description() string { return "Read a file from disk. Returns line-numbered content." }
+func (t *ReadTool) Kind() ToolKind      { return KindRead }
 
 func (t *ReadTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{

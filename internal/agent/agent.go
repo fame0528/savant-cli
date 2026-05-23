@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/spenc/savant-cli/internal/provider"
 	"github.com/spenc/savant-cli/internal/tools"
@@ -36,47 +37,52 @@ const (
 
 // Agent runs the agentic loop.
 type Agent struct {
-	provider provider.Provider
-	registry *tools.Registry
-	messages []provider.ChatMessage
-	maxTurns int
-	events   chan<- Event
+	provider        provider.Provider
+	registry        *tools.Registry
+	messages        []provider.ChatMessage
+	maxTurns        int
+	events          chan<- Event
+	systemPrompt    string
+	instructionsMsg string
+	stepMsg         string
 }
 
-// NewAgent creates a new agent.
-func NewAgent(p provider.Provider, registry *tools.Registry, maxTurns int, events chan<- Event, priorMessages []provider.ChatMessage) *Agent {
-	return &Agent{
-		provider: p,
-		registry: registry,
-		maxTurns: maxTurns,
-		events:   events,
-		messages: priorMessages,
+// NewAgent creates a new agent with template-based grounding.
+func NewAgent(p provider.Provider, registry *tools.Registry, maxTurns int, events chan<- Event, priorMessages []provider.ChatMessage) (*Agent, error) {
+	// Build system prompt from template
+	sysPrompt, err := BuildSystemPrompt()
+	if err != nil {
+		return nil, fmt.Errorf("build system prompt: %w", err)
 	}
+
+	instructions, err := BuildInstructionsPrompt()
+	if err != nil {
+		return nil, fmt.Errorf("build instructions prompt: %w", err)
+	}
+
+	step, err := BuildStepPrompt()
+	if err != nil {
+		return nil, fmt.Errorf("build step prompt: %w", err)
+	}
+
+	return &Agent{
+		provider:        p,
+		registry:        registry,
+		maxTurns:        maxTurns,
+		events:          events,
+		messages:        priorMessages,
+		systemPrompt:    sysPrompt,
+		instructionsMsg: instructions,
+		stepMsg:         step,
+	}, nil
 }
-
-// systemPrompt is the identity and instruction set for Savant.
-const systemPrompt = `You are Savant, a terminal-native AI coding assistant. You help developers write, read, debug, and understand code.
-
-Your capabilities:
-- Read, write, and edit files using the provided tools
-- Execute shell commands with the bash tool
-- Search files by pattern (glob) and content (grep)
-- Analyze code and provide actionable suggestions
-
-Guidelines:
-- Be concise and direct. No filler words.
-- When asked to do something, do it immediately using your tools.
-- Show code, don't just describe it.
-- If you need to see a file, read it. Don't guess.
-- Always use tools to interact with the filesystem - never just describe what you would do.
-- You are running in a terminal. Keep output compact and scannable.`
 
 // Run executes the agentic loop for a user prompt.
 func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 	// Ensure system prompt is first message
 	if len(a.messages) == 0 || a.messages[0].Role != "system" {
 		a.messages = append([]provider.ChatMessage{
-			{Role: "system", Content: systemPrompt},
+			{Role: "system", Content: a.systemPrompt},
 		}, a.messages...)
 	}
 
@@ -84,6 +90,12 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 	a.messages = append(a.messages, provider.ChatMessage{
 		Role:    "user",
 		Content: userPrompt,
+	})
+
+	// Inject instructions reminder after user message
+	a.messages = append(a.messages, provider.ChatMessage{
+		Role:    "system",
+		Content: a.instructionsMsg,
 	})
 
 	// Build tool definitions for the model
@@ -110,8 +122,16 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 			}
 		}
 
+		// Inject step reminder before each model call
+		messages := make([]provider.ChatMessage, len(a.messages))
+		copy(messages, a.messages)
+		messages = append(messages, provider.ChatMessage{
+			Role:    "system",
+			Content: a.stepMsg,
+		})
+
 		req := provider.ChatRequest{
-			Messages: a.messages,
+			Messages: messages,
 			Tools:    toolDefs,
 		}
 
@@ -123,10 +143,10 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 
 		// Collect streaming response
 		var (
-			fullContent    string
-			fullReasoning  string
-			toolCalls      []provider.ToolCall
-			streamErr      error
+			fullContent   string
+			fullReasoning string
+			toolCalls     []provider.ToolCall
+			streamErr     error
 		)
 
 		for {
@@ -140,7 +160,7 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 			}
 
 			for _, choice := range chunk.Choices {
-				// Capture reasoning silently (don't emit to TUI)
+				// Capture reasoning silently
 				if choice.Delta.Reasoning != "" {
 					fullReasoning += choice.Delta.Reasoning
 				}
@@ -187,7 +207,7 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 			ToolCalls: toolCalls,
 		})
 
-		// Execute tool calls (concurrently)
+		// Execute tool calls
 		var calls []tools.ToolCall
 		for _, tc := range toolCalls {
 			calls = append(calls, tools.ToolCall{
@@ -199,7 +219,8 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 
 		results := a.registry.ExecuteAll(ctx, calls)
 
-		// Add tool results as messages
+		// Add tool results as messages and handle follow-ups
+		var followUps []tools.ToolCall
 		for i, result := range results {
 			toolName := ""
 			if i < len(toolCalls) {
@@ -218,6 +239,24 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 				Content:    result.Content,
 				Name:       toolName,
 			})
+
+			// Collect follow-up tool calls (tail calls)
+			if result.FollowUp != nil {
+				followUps = append(followUps, *result.FollowUp)
+			}
+		}
+
+		// Execute tail tool calls (without returning to model)
+		if len(followUps) > 0 {
+			slog.Info("Executing tail tool calls", "count", len(followUps))
+			followUpResults := a.registry.ExecuteAll(ctx, followUps)
+			for _, result := range followUpResults {
+				a.messages = append(a.messages, provider.ChatMessage{
+					Role:       "tool",
+					ToolCallID: result.ToolCallID,
+					Content:    result.Content,
+				})
+			}
 		}
 	}
 

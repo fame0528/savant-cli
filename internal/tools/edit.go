@@ -14,6 +14,7 @@ func NewEditTool() *EditTool { return &EditTool{} }
 
 func (t *EditTool) Name() string        { return "edit" }
 func (t *EditTool) Description() string { return "Replace a string in a file. The old_string must be unique in the file." }
+func (t *EditTool) Kind() ToolKind      { return KindWrite }
 
 func (t *EditTool) Parameters() json.RawMessage {
 	return json.RawMessage(`{

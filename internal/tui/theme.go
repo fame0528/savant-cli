@@ -102,6 +102,14 @@ type Theme struct {
 	HelpText  lipgloss.Style
 	DividerLine   lipgloss.Style
 
+	// Dialog system
+	Dialog      lipgloss.Style
+	Button      lipgloss.Style
+	ButtonFocus lipgloss.Style
+
+	// Text aliases
+	TextPrimary lipgloss.Style
+
 	// Glitch frames for logo
 	glitchFrames []string
 }
@@ -255,6 +263,29 @@ func NewCyberpunkTheme() *Theme {
 
 		DividerLine: lipgloss.NewStyle().
 			Foreground(BorderColor),
+
+		Dialog: lipgloss.NewStyle().
+			Foreground(TextPrimary).
+			Background(PanelBg).
+			Border(lipgloss.DoubleBorder()).
+			BorderForeground(HyperCyan).
+			Padding(1, 2),
+
+		Button: lipgloss.NewStyle().
+			Foreground(TextPrimary).
+			Background(BorderColor).
+			Padding(0, 2).
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(TextDim),
+
+		ButtonFocus: lipgloss.NewStyle().
+			Foreground(VoidIndigo).
+			Background(HyperCyan).
+			Bold(true).
+			Padding(0, 2),
+
+		TextPrimary: lipgloss.NewStyle().
+			Foreground(TextPrimary),
 	}
 
 	// Glitch logo frames

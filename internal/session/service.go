@@ -235,3 +235,59 @@ type FileChange struct {
 	NewContent string    `json:"new_content,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 }
+
+// SessionSummary is a compact representation of a session for extraction.
+type SessionSummary struct {
+	ID           string
+	Title        string
+	MessageCount int
+	UpdatedAt    time.Time
+}
+
+// MessageSummary is a compact representation of a message.
+type MessageSummary struct {
+	Role    string
+	Content string
+}
+
+// ListEligibleForExtraction returns sessions eligible for skill extraction.
+func (s *Service) ListEligibleForExtraction(ctx context.Context, minMessages int, idleDuration time.Duration) ([]SessionSummary, error) {
+	cutoff := time.Now().Add(-idleDuration)
+	rows, err := s.db.Conn().QueryContext(ctx,
+		`SELECT id, title, message_count, updated_at
+		 FROM sessions
+		 WHERE message_count >= ? AND updated_at <= ?
+		 ORDER BY updated_at DESC`,
+		minMessages, cutoff,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list eligible sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []SessionSummary
+	for rows.Next() {
+		var sess SessionSummary
+		if err := rows.Scan(&sess.ID, &sess.Title, &sess.MessageCount, &sess.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, rows.Err()
+}
+
+// GetMessageSummaries returns compact message summaries for a session.
+func (s *Service) GetMessageSummaries(ctx context.Context, sessionID string) ([]MessageSummary, error) {
+	msgs, err := s.GetMessages(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var summaries []MessageSummary
+	for _, m := range msgs {
+		summaries = append(summaries, MessageSummary{
+			Role:    m.Role,
+			Content: m.Content,
+		})
+	}
+	return summaries, nil
+}

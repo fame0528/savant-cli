@@ -56,7 +56,7 @@ type Registry struct {
 }
 
 // NewRegistry creates a tool registry with all built-in tools.
-func NewRegistry() *Registry {
+func NewRegistry(skillsDir string) *Registry {
 	r := &Registry{tools: make(map[string]Tool)}
 	r.Register(NewBashTool())
 	r.Register(NewReadTool())
@@ -64,6 +64,9 @@ func NewRegistry() *Registry {
 	r.Register(NewWriteTool())
 	r.Register(NewGlobTool())
 	r.Register(NewGrepTool())
+	if skillsDir != "" {
+		r.Register(NewSkillManageTool(skillsDir))
+	}
 	return r
 }
 

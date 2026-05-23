@@ -3,9 +3,9 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -27,7 +27,7 @@ type agentDoneMsg struct{}
 type tickMsg time.Time
 type spinnerTickMsg struct{}
 
-// eventSub is a tea.Cmd that reads from the agent event channel.
+// eventSub reads from the agent event channel and returns a tea.Cmd.
 func eventSub(ch <-chan agent.Event) tea.Cmd {
 	return func() tea.Msg {
 		e, ok := <-ch
@@ -63,17 +63,27 @@ type Model struct {
 
 	// Chat state
 	messages  []chatMessage
-	input     string
-	cursorPos int // rune index, not byte index
 	streaming string
 	working   bool
 	scrollPos int
 	err       error
 
+	// Input
+	input InputEditor
+
+	// File tree
+	fileTree *FileTree
+
+	// Completions
+	completions *Completions
+
+	// Dialog overlay
+	dialogs *DialogOverlay
+
 	// Agent
 	ctx     context.Context
 	cancel  context.CancelFunc
-	evtChan chan agent.Event // channel for agent events
+	evtChan chan agent.Event
 
 	// Conversation history (provider format) - preserved between turns
 	agentMessages []provider.ChatMessage
@@ -91,8 +101,7 @@ type Model struct {
 	turnCount      int
 
 	// Sidebar state
-	sidebarTab  int // 0=files, 1=sessions, 2=tasks, 3=pet
-	recentFiles []string
+	sidebarTab int // 0=files, 1=sessions, 2=tasks, 3=pet
 }
 
 type chatMessage struct {
@@ -104,6 +113,7 @@ type chatMessage struct {
 
 // New creates a new TUI model.
 func New(p provider.Provider, registry *tools.Registry, cmdReg *commands.Registry, sessionSvc *session.Service, petObj *pet.Pet, maxTurns int) Model {
+	cwd, _ := os.Getwd()
 	return Model{
 		provider:     p,
 		registry:     registry,
@@ -112,10 +122,14 @@ func New(p provider.Provider, registry *tools.Registry, cmdReg *commands.Registr
 		pet:          petObj,
 		theme:        NewCyberpunkTheme(),
 		maxTurns:     maxTurns,
-		sidebarWidth: 30,
+		sidebarWidth: 32,
 		showSidebar:  true,
 		showLogs:     false,
 		sidebarTab:   0,
+		input:        NewInputEditor(),
+		fileTree:     NewFileTree(cwd, 30),
+		completions:  NewCompletions(40),
+		dialogs:      NewDialogOverlay(),
 	}
 }
 
@@ -140,6 +154,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.input.SetWidth(m.width - 4)
+		if m.showSidebar {
+			m.fileTree = NewFileTree(m.getCwd(), m.sidebarWidth-4)
+		}
 
 	case tea.KeyPressMsg:
 		return m.handleKeyPress(msg)
@@ -149,7 +167,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentDoneMsg:
 		m.working = false
-		// Flush any remaining streaming text
 		if m.streaming != "" {
 			m.messages = append(m.messages, chatMessage{
 				role:      "assistant",
@@ -163,15 +180,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.tickCount++
-		// Advance animation frame every 2 seconds (20 ticks at 100ms)
 		if m.tickCount%20 == 0 {
 			m.glitchFrame = (m.glitchFrame + 1) % logoFrameCount
 		}
-		// Glitch flicker every 10 ticks
 		if m.tickCount%10 == 0 {
 			m.glitchActive = !m.glitchActive
 		}
-		// Pet tick every 60 seconds (600 ticks)
 		if m.pet != nil && m.tickCount%600 == 0 {
 			m.pet.Tick()
 		}
@@ -190,6 +204,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+
+	// Dialog overlay gets first priority
+	if !m.dialogs.IsEmpty() {
+		action := m.dialogs.HandleKey(msg)
+		switch action {
+		case DialogConfirm, DialogCancel, DialogSelect:
+			m.dialogs.Pop()
+			return m, nil
+		}
+		return m, nil
+	}
+
+	// Completions popup gets second priority
+	if m.completions.IsVisible() {
+		switch key {
+		case "up", "ctrl+p":
+			m.completions.MoveUp()
+			return m, nil
+		case "down", "ctrl+n":
+			m.completions.MoveDown()
+			return m, nil
+		case "enter", "tab":
+			selected := m.completions.Selected()
+			if selected != nil {
+				// Replace the @mention with the selected path
+				inputVal := m.input.Value()
+				atIdx := strings.LastIndex(inputVal, "@")
+				if atIdx >= 0 {
+					m.input.SetValue(inputVal[:atIdx]+"@"+selected.Path+" ")
+				}
+			}
+			m.completions.Hide()
+			return m, nil
+		case "esc":
+			m.completions.Hide()
+			return m, nil
+		}
+		return m, nil
+	}
 
 	// If agent is working, only accept cancel
 	if m.working {
@@ -213,63 +266,61 @@ func (m Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+l":
 		m.showLogs = !m.showLogs
 
-	case "enter":
-		if strings.TrimSpace(m.input) == "" {
-			return m, nil
+	case "ctrl+p":
+		// Command palette - show list dialog
+		cmds := m.commands.All()
+		items := make([]string, len(cmds))
+		for i, cmd := range cmds {
+			items[i] = fmt.Sprintf("/%s - %s", cmd.Name, cmd.Description)
 		}
-		return m.handleSubmit()
+		m.dialogs.Push(NewListDialog("commands", "Commands", items))
+		return m, nil
 
-	case "backspace":
-		runes := []rune(m.input)
-		if len(runes) > 0 && m.cursorPos > 0 {
-			m.input = string(append(runes[:m.cursorPos-1], runes[m.cursorPos:]...))
-			m.cursorPos--
-		}
+	case "tab":
+		m.sidebarTab = (m.sidebarTab + 1) % 4
+		return m, nil
 
-	case "left":
-		if m.cursorPos > 0 {
-			m.cursorPos--
-		}
-	case "right":
-		runes := []rune(m.input)
-		if m.cursorPos < len(runes) {
-			m.cursorPos++
-		}
-	case "home", "ctrl+a":
-		m.cursorPos = 0
-	case "end", "ctrl+e":
-		m.cursorPos = utf8.RuneCountInString(m.input)
 	case "up":
 		if m.scrollPos > 0 {
 			m.scrollPos--
 		}
+		return m, nil
 	case "down":
 		m.scrollPos++
+		return m, nil
+	}
 
-	case "tab":
-		m.sidebarTab = (m.sidebarTab + 1) % 4
+	// Pass all other keys to the input editor
+	inputCmd := m.input.Update(msg)
 
-	default:
-		// Insert character (single rune only)
-		r, size := utf8.DecodeRuneInString(key)
-		if r != utf8.RuneError && size > 0 {
-			runes := []rune(m.input)
-			newRunes := make([]rune, 0, len(runes)+1)
-			newRunes = append(newRunes, runes[:m.cursorPos]...)
-			newRunes = append(newRunes, r)
-			newRunes = append(newRunes, runes[m.cursorPos:]...)
-			m.input = string(newRunes)
-			m.cursorPos++
+	// Check for @ mentions
+	inputVal := m.input.Value()
+	if strings.Contains(inputVal, "@") && !m.completions.IsVisible() {
+		atIdx := strings.LastIndex(inputVal, "@")
+		if atIdx >= 0 {
+			query := inputVal[atIdx+1:]
+			if len(query) > 0 && !strings.Contains(query, " ") {
+				items := ScanFiles(m.getCwd())
+				m.completions.Show(items)
+				m.completions.Filter(query)
+			}
 		}
 	}
 
-	return m, nil
+	// Check for enter to submit
+	if key == "enter" {
+		if !m.input.IsEmpty() {
+			return m.handleSubmit()
+		}
+	}
+
+	return m, inputCmd
 }
 
 func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
-	prompt := strings.TrimSpace(m.input)
-	m.input = ""
-	m.cursorPos = 0
+	prompt := strings.TrimSpace(m.input.Value())
+	m.input.Reset()
+	m.completions.Hide()
 
 	// Check for slash commands first
 	if result, ok := m.commands.TryExecute(prompt); ok {
@@ -289,7 +340,7 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Pet event: user sent a message
+	// Pet event
 	if m.pet != nil {
 		m.pet.OnMessage()
 	}
@@ -308,17 +359,15 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	a := agent.NewAgent(m.provider, m.registry, m.maxTurns, m.evtChan, m.agentMessages)
 
-	// Start agent in a goroutine
 	go func() {
 		err := a.Run(m.ctx, prompt)
-		// Save conversation history for next turn
 		if err == nil {
-			// We'll capture messages when done
+			// Save conversation history for next turn
+			_ = a.Messages()
 		}
 		close(m.evtChan)
 	}()
 
-	// Subscribe to events
 	return m, eventSub(m.evtChan)
 }
 
@@ -341,7 +390,6 @@ func (m Model) handleAgentEvent(e agent.Event) (tea.Model, tea.Cmd) {
 		return m, eventSub(m.evtChan)
 
 	case agent.EventToolResult:
-		// Update the last tool message with the result
 		for i := len(m.messages) - 1; i >= 0; i-- {
 			if m.messages[i].role == "tool" {
 				m.messages[i].content = e.Content
@@ -351,7 +399,6 @@ func (m Model) handleAgentEvent(e agent.Event) (tea.Model, tea.Cmd) {
 		return m, eventSub(m.evtChan)
 
 	case agent.EventDone:
-		// Handled by agentDoneMsg when channel closes
 		return m, eventSub(m.evtChan)
 
 	case agent.EventError:
@@ -364,11 +411,16 @@ func (m Model) handleAgentEvent(e agent.Event) (tea.Model, tea.Cmd) {
 	return m, eventSub(m.evtChan)
 }
 
+// getCwd returns the current working directory.
+func (m Model) getCwd() string {
+	cwd, _ := os.Getwd()
+	return cwd
+}
+
 // ─────────────────────────────────────────────────────────────
 // Safe string utilities
 // ─────────────────────────────────────────────────────────────
 
-// safeRepeat returns empty string if n <= 0.
 func safeRepeat(s string, n int) string {
 	if n <= 0 {
 		return ""
@@ -377,7 +429,7 @@ func safeRepeat(s string, n int) string {
 }
 
 // ─────────────────────────────────────────────────────────────
-// VIEW - Complex multi-panel layout
+// VIEW
 // ─────────────────────────────────────────────────────────────
 
 func (m Model) View() tea.View {
@@ -393,7 +445,7 @@ func (m Model) View() tea.View {
 		chatWidth = 10
 	}
 
-	// Build each panel
+	// Build panels
 	titleBar := m.renderTitleBar()
 	sidebar := ""
 	if m.showSidebar {
@@ -408,12 +460,18 @@ func (m Model) View() tea.View {
 		logPanel = m.renderLogPanel()
 	}
 
+	// Completions popup
+	completionsStr := ""
+	if m.completions.IsVisible() {
+		completionsStr = m.completions.Render(m.theme)
+	}
+
 	// Assemble layout
 	var sb strings.Builder
 	sb.WriteString(titleBar)
 	sb.WriteString("\n")
 
-	// Main area: sidebar + chat/tool panels side by side
+	// Main area: sidebar + chat/tool side by side
 	if m.showSidebar {
 		chatLines := strings.Split(chat, "\n")
 		sideLines := strings.Split(sidebar, "\n")
@@ -421,7 +479,6 @@ func (m Model) View() tea.View {
 
 		maxLines := max(len(chatLines)+len(toolLines), len(sideLines))
 		for i := 0; i < maxLines; i++ {
-			// Sidebar column
 			if i < len(sideLines) {
 				sb.WriteString(sideLines[i])
 			} else {
@@ -429,7 +486,6 @@ func (m Model) View() tea.View {
 			}
 			sb.WriteString("│")
 
-			// Chat + tool column
 			if i < len(chatLines) {
 				sb.WriteString(chatLines[i])
 			} else if i < len(chatLines)+len(toolLines) {
@@ -442,8 +498,14 @@ func (m Model) View() tea.View {
 		sb.WriteString(toolPanel)
 	}
 
+	// Input area
 	sb.WriteString(inputArea)
 	sb.WriteString("\n")
+
+	// Completions popup (rendered above input)
+	if completionsStr != "" {
+		sb.WriteString(completionsStr)
+	}
 
 	if m.showLogs {
 		sb.WriteString(logPanel)
@@ -502,7 +564,7 @@ func (m Model) renderSidebar() string {
 
 	switch m.sidebarTab {
 	case 0:
-		sb.WriteString(m.renderFileTree())
+		sb.WriteString(m.renderFileTreePanel())
 	case 1:
 		sb.WriteString(m.renderSessionList())
 	case 2:
@@ -526,15 +588,11 @@ func (m Model) renderSidebar() string {
 	return strings.Join(result, "\n")
 }
 
-func (m Model) renderFileTree() string {
-	if len(m.recentFiles) == 0 {
-		return m.theme.TextDim.Render("  No files opened yet.\n")
+func (m Model) renderFileTreePanel() string {
+	if m.fileTree == nil {
+		return m.theme.TextDim.Render("  No files found.\n")
 	}
-	var sb strings.Builder
-	for _, f := range m.recentFiles {
-		sb.WriteString(m.theme.TextDim.Render("  ├─ " + f + "\n"))
-	}
-	return sb.String()
+	return m.fileTree.Render(m.theme, m.sidebarWidth-4)
 }
 
 func (m Model) renderSessionList() string {
@@ -578,12 +636,10 @@ func (m Model) renderPetPanel() string {
 	}
 	sb.WriteString(m.theme.Success.Render("  "+p.HPBar(barWidth)+"\n"))
 	sb.WriteString(m.theme.Info.Render("  "+p.XPBar(barWidth)+"\n"))
-
 	sb.WriteString(m.theme.TextDim.Render("  "+p.StatusLine()+"\n"))
 	sb.WriteString("\n")
 	sb.WriteString(m.theme.TextDim.Render("  "+p.Stats()+"\n"))
 	sb.WriteString("\n")
-
 	sb.WriteString(m.theme.Warn.Render("  Commands:\n"))
 	sb.WriteString(m.theme.TextDim.Render("  /pet feed   /pet play\n"))
 	sb.WriteString(m.theme.TextDim.Render("  /pet rest   /pet heal\n"))
@@ -692,12 +748,13 @@ func (m Model) renderWelcome(width int) string {
 			"  Keybindings:\n" +
 			"    Ctrl+S       Toggle sidebar\n" +
 			"    Ctrl+L       Toggle log panel\n" +
+			"    Ctrl+P       Command palette\n" +
 			"    Tab          Cycle sidebar tabs\n" +
 			"    Enter        Send message\n" +
 			"    Ctrl+C       Cancel / Quit\n\n" +
 			"  Providers:\n" +
+			"    opengateway  Gitlawb gateway (free MiMo)\n" +
 			"    9router      Local gateway (15+ providers)\n" +
-			"    MiMo V2 Pro  Free via Xiaomi API\n" +
 			"    Ollama       Local models\n",
 	)
 
@@ -754,11 +811,7 @@ func (m Model) renderInputArea() string {
 		return m.theme.InputWorking.Render(fmt.Sprintf(" %s Processing... (Ctrl+C to cancel)", spinner))
 	}
 
-	prompt := m.theme.InputPrompt.Render(" ▸ ")
-	input := m.theme.InputText.Render(m.input)
-	cursor := m.theme.Cursor.Render("█")
-
-	return m.theme.InputBox.Render(prompt + input + cursor)
+	return m.input.View(m.theme, false)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -813,4 +866,9 @@ func (m Model) renderLogPanel() string {
 	footer := safeRepeat("═", max(1, m.width-3))
 	sb.WriteString(m.theme.LogHeader.Render(" ╚" + footer + "╝"))
 	return sb.String()
+}
+
+// renderFileTree is deprecated - use renderFileTreePanel
+func (m Model) renderFileTree() string {
+	return m.renderFileTreePanel()
 }

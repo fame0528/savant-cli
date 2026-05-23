@@ -8,4 +8,6 @@ Key rules for this turn:
 - After 3 failures with same approach: stop and reconsider
 - Prefer parallel tool calls when operations are independent
 - Never send acknowledgement-only responses; immediately continue the task
+- State assumptions explicitly before implementing; if uncertain, ask
+- Surgical changes only: every changed line traces to the user's request
 </instructions_reminder>

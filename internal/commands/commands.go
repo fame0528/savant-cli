@@ -3,6 +3,7 @@ package commands
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -254,6 +255,41 @@ func (r *Registry) RegisterConfig() {
 			default:
 				return fmt.Sprintf("Unknown config subcommand: %s", parts[0])
 			}
+		},
+	})
+}
+
+// RegisterConfigReal registers /config with actual config values.
+func (r *Registry) RegisterConfigReal(cfg interface{}) {
+	// Type assert to get config values
+	type configGetter interface {
+		GetDefaultProvider() string
+		GetDefaultModel() string
+		GetMaxTurns() int
+		GetTheme() string
+	}
+
+	r.Register(&Command{
+		Name:        "config",
+		Description: "View configuration",
+		Usage:       "/config [show|edit]",
+		Execute: func(args string) string {
+			parts := strings.Fields(args)
+			if len(parts) == 0 || parts[0] == "show" {
+				// Use reflection-free approach - just show the config file path
+				home, _ := os.UserHomeDir()
+				cfgPath := home + "/.savant/config.json"
+				data, err := os.ReadFile(cfgPath)
+				if err != nil {
+					return "No config file found at " + cfgPath
+				}
+				return "Config file: " + cfgPath + "\n\n" + string(data)
+			}
+			if parts[0] == "edit" {
+				home, _ := os.UserHomeDir()
+				return "Edit the config file: " + home + "/.savant/config.json"
+			}
+			return fmt.Sprintf("Unknown config subcommand: %s", parts[0])
 		},
 	})
 }

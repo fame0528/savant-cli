@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -55,8 +57,29 @@ func main() {
 	// Create session service
 	sessionSvc := session.NewService(database)
 
-	// Create or load pet
-	petObj := pet.NewPet("Byte")
+	// Load or create pet
+	petDir := config.ConfigDir()
+	petObj := pet.LoadPet(petDir)
+	if petObj == nil {
+		petObj = pet.NewPet("Byte")
+	}
+
+	// Save pet on exit
+	defer func() {
+		if err := petObj.Save(petDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to save pet: %v\n", err)
+		}
+	}()
+
+	// Signal handler for graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		// Save pet before exit
+		petObj.Save(petDir)
+		os.Exit(0)
+	}()
 
 	// Build provider chain
 	providers := buildProviders(cfg)
@@ -73,7 +96,7 @@ func main() {
 	// Create tool registry
 	registry := tools.NewRegistry()
 
-	// Create command registry and register pet command
+	// Create command registry
 	cmdReg := commands.NewRegistry()
 	cmdReg.RegisterPet(
 		petObj.Feed,
@@ -82,6 +105,7 @@ func main() {
 		petObj.Heal,
 		petObj.Stats,
 	)
+	cmdReg.RegisterConfigReal(cfg)
 
 	// Create and run TUI
 	model := tui.New(selected, registry, cmdReg, sessionSvc, petObj, cfg.MaxTurns)
@@ -119,6 +143,7 @@ Usage:
 Configuration:
   ~/.savant/config.json    Configuration file
   ~/.savant/savant.db      Session database
+  ~/.savant/pet.json       Pet state persistence
 
 Environment Variables:
   OPENAI_API_KEY           API key for OpenAI-compatible providers

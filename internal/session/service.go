@@ -78,7 +78,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Session, error) {
 		&sess.OutputTokens, &sess.Cost, &sess.ProviderName, &sess.ModelName,
 		&sess.CreatedAt, &sess.UpdatedAt)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, fmt.Errorf("session %s not found", id)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)

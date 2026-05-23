@@ -80,8 +80,7 @@ type Model struct {
 
 	spinnerFrame int
 	tickCount    int
-	glitchActive bool
-	glitchFrame  int
+	bootAnimFrame int
 
 	totalTokensIn  int
 	totalTokensOut int
@@ -159,11 +158,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.tickCount++
-		if m.tickCount%20 == 0 {
-			m.glitchFrame = (m.glitchFrame + 1) % logoFrameCount
-		}
-		if m.tickCount%10 == 0 {
-			m.glitchActive = !m.glitchActive
+		// Boot animation: advance every 10 ticks (1 second per frame)
+		if m.bootAnimFrame <= 4 && m.tickCount%10 == 0 {
+			m.bootAnimFrame++
 		}
 		if m.pet != nil && m.tickCount%600 == 0 {
 			m.pet.Tick()
@@ -707,9 +704,15 @@ func (m Model) renderStreamingMsg(width int) []string {
 
 func (m Model) renderWelcome(width, height int) string {
 	var sb strings.Builder
-	logo := GetAnimatedLogo(m.glitchFrame, m.theme)
-	sb.WriteString(logo)
-	sb.WriteString("\n")
+
+	// Boot animation: show logo for 5 seconds, then disappear
+	logo := bootFrame(m.bootAnimFrame, m.theme)
+	if logo != "" {
+		sb.WriteString(logo)
+		sb.WriteString("\n")
+		sb.WriteString(m.theme.Divider(max(1, width-4)))
+		sb.WriteString("\n")
+	}
 	sb.WriteString(m.theme.Divider(max(1, width-4)))
 	sb.WriteString("\n")
 	help := []string{

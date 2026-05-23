@@ -354,30 +354,6 @@ func NewCyberpunkTheme() *Theme {
 	return t
 }
 
-// Logo returns the full Savant ASCII logo.
-func (t *Theme) Logo() string {
-	return t.TitleLogo.Render(strings.Join(t.glitchFrames, "\n"))
-}
-
-// GlitchLogo returns the logo with optional glitch effect.
-func (t *Theme) GlitchLogo(frame int, glitch bool) string {
-	logo := GetLogo(100)
-	if !glitch {
-		return t.TitleLogo.Render(logo)
-	}
-
-	lines := strings.Split(logo, "\n")
-	glitched := make([]string, len(lines))
-	copy(glitched, lines)
-
-	idx := frame % len(lines)
-	if idx < len(glitched) && len(glitched[idx]) > 2 {
-		glitched[idx] = " " + glitched[idx][:len(glitched[idx])-1]
-	}
-
-	return t.TitleLogo.Render(strings.Join(glitched, "\n"))
-}
-
 // ProviderBadge returns a styled provider name badge.
 func (t *Theme) ProviderBadge(name string) string {
 	return t.ProviderBadgeStyle().Render(fmt.Sprintf(" ▲ %s ", strings.ToUpper(name)))

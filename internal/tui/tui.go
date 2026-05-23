@@ -409,7 +409,7 @@ func (m Model) renderTitleBar() string {
 	provInfo := m.theme.ProviderBadge(m.provider.Name())
 
 	// Animated separator
-	sep := m.theme.AnimatedSeparator(m.width-len(lipgloss.StripAnsi(logo))-len(lipgloss.StripAnsi(provInfo))-4, m.tickCount)
+	sep := m.theme.AnimatedSeparator(m.width-len(stripAnsi(logo))-len(stripAnsi(provInfo))-4, m.tickCount)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, logo, sep, provInfo)
 }
@@ -625,7 +625,7 @@ func (m Model) renderStreamingMsg(width int) string {
 }
 
 func (m Model) renderWelcome(width int) string {
-	logo := m.theme.Logo()
+	logo := GetAnimatedLogo(m.glitchFrame, m.theme)
 	divider := m.theme.Divider(width - 4)
 	help := m.theme.HelpText.Render(
 		"  Welcome to Savant CLI — Terminal-Native AI Coding Assistant\n\n" +

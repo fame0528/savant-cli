@@ -219,7 +219,7 @@ func (m Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.scrollPos++
 
 	case "tab":
-		m.sidebarTab = (m.sidebarTab + 1) % 3
+		m.sidebarTab = (m.sidebarTab + 1) % 4
 
 	default:
 		if len(key) == 1 {
@@ -414,7 +414,7 @@ func (m Model) renderSidebar() string {
 	var sb strings.Builder
 
 	// Tab bar
-	tabs := []string{"📁 Files", "💬 Sessions", "📋 Tasks"}
+	tabs := []string{"📁 Files", "💬 Sessions", "📋 Tasks", "🐾 Pet"}
 	tabBar := ""
 	for i, tab := range tabs {
 		if i == m.sidebarTab {
@@ -486,6 +486,47 @@ func (m Model) renderTaskList() string {
 		sb.WriteString(m.theme.Warn.Render("  ⟳ Processing...\n"))
 	}
 	sb.WriteString(m.theme.TextDim.Render("  No tasks queued.\n"))
+	return sb.String()
+}
+
+func (m Model) renderPetPanel() string {
+	if m.pet == nil {
+		return m.theme.TextDim.Render("  No pet yet.\n")
+	}
+
+	p := m.pet
+	var sb strings.Builder
+
+	// Pet animation frame
+	frame := p.Frame(m.tickCount)
+	for _, line := range strings.Split(frame, "\n") {
+		sb.WriteString(m.theme.Info.Render("  " + line + "\n"))
+	}
+
+	// Name + mood
+	mood := p.Mood().Emoji()
+	sb.WriteString(m.theme.Info.Render(fmt.Sprintf("  %s %s\n", p.Name, mood)))
+
+	// Stats bars
+	barWidth := m.sidebarWidth - 8
+	if barWidth < 10 {
+		barWidth = 10
+	}
+	sb.WriteString(m.theme.Success.Render("  "+p.HPBar(barWidth)+"\n"))
+	sb.WriteString(m.theme.Info.Render("  "+p.XPBar(barWidth)+"\n"))
+
+	// Status
+	sb.WriteString(m.theme.TextDim.Render("  "+p.StatusLine()+"\n"))
+	sb.WriteString("\n")
+	sb.WriteString(m.theme.TextDim.Render("  "+p.Stats()+"\n"))
+	sb.WriteString("\n")
+
+	// Actions
+	sb.WriteString(m.theme.Warn.Render("  Commands:\n"))
+	sb.WriteString(m.theme.TextDim.Render("  /pet feed   /pet play\n"))
+	sb.WriteString(m.theme.TextDim.Render("  /pet rest   /pet heal\n"))
+	sb.WriteString(m.theme.TextDim.Render("  /pet stats  /pet name\n"))
+
 	return sb.String()
 }
 

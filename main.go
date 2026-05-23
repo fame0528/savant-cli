@@ -10,6 +10,7 @@ import (
 	"github.com/spenc/savant-cli/internal/commands"
 	"github.com/spenc/savant-cli/internal/config"
 	"github.com/spenc/savant-cli/internal/db"
+	"github.com/spenc/savant-cli/internal/pet"
 	"github.com/spenc/savant-cli/internal/provider"
 	"github.com/spenc/savant-cli/internal/session"
 	"github.com/spenc/savant-cli/internal/tools"
@@ -54,6 +55,9 @@ func main() {
 	// Create session service
 	sessionSvc := session.NewService(database)
 
+	// Create or load pet
+	petObj := pet.NewPet("Byte")
+
 	// Build provider chain
 	providers := buildProviders(cfg)
 	if len(providers) == 0 {
@@ -69,11 +73,18 @@ func main() {
 	// Create tool registry
 	registry := tools.NewRegistry()
 
-	// Create command registry
+	// Create command registry and register pet command
 	cmdReg := commands.NewRegistry()
+	cmdReg.RegisterPet(
+		petObj.Feed,
+		petObj.Play,
+		petObj.Rest,
+		petObj.Heal,
+		petObj.Stats,
+	)
 
 	// Create and run TUI
-	model := tui.New(selected, registry, cmdReg, sessionSvc, cfg.MaxTurns)
+	model := tui.New(selected, registry, cmdReg, sessionSvc, petObj, cfg.MaxTurns)
 	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -121,13 +132,13 @@ Commands (in TUI):
   /model          Switch model
   /session        Session management
   /config         View/edit configuration
+  /pet            Interact with your virtual coding companion
 
 Keybindings:
   Enter           Send message
   Ctrl+C          Cancel / Quit
   Ctrl+S          Toggle sidebar
   Ctrl+L          Toggle log panel
-  Ctrl+P          Command palette
   Tab             Cycle sidebar tabs
   Up/Down         Scroll chat
   Left/Right      Move cursor

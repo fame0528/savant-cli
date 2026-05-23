@@ -27,6 +27,7 @@ func NewRegistry() *Registry {
 	r.RegisterModel()
 	r.RegisterSession()
 	r.RegisterConfig()
+	r.RegisterQuit()
 	return r
 }
 
@@ -186,6 +187,41 @@ func (r *Registry) RegisterSession() {
 				return "No sessions yet.\n(Session management not yet implemented)"
 			default:
 				return fmt.Sprintf("Unknown session subcommand: %s", parts[0])
+			}
+		},
+	})
+}
+
+// RegisterPet registers the /pet command for the virtual pet system.
+func (r *Registry) RegisterPet(feedFn, playFn, restFn, healFn, statsFn func() string) {
+	r.Register(&Command{
+		Name:        "pet",
+		Description: "Interact with your virtual coding companion",
+		Usage:       "/pet [feed|play|rest|heal|stats]",
+		Execute: func(args string) string {
+			parts := strings.Fields(args)
+			if len(parts) == 0 {
+				return "Usage: /pet [feed|play|rest|heal|stats]\n" +
+					"  /pet feed     Feed your pet\n" +
+					"  /pet play     Play with your pet\n" +
+					"  /pet rest     Let your pet rest\n" +
+					"  /pet heal     Heal your pet\n" +
+					"  /pet stats    View pet statistics\n\n" +
+					"  Or press Tab to view the Pet sidebar!"
+			}
+			switch parts[0] {
+			case "feed":
+				return feedFn()
+			case "play":
+				return playFn()
+			case "rest":
+				return restFn()
+			case "heal":
+				return healFn()
+			case "stats":
+				return statsFn()
+			default:
+				return fmt.Sprintf("Unknown pet command: %s\nUse: /pet [feed|play|rest|heal|stats]", parts[0])
 			}
 		},
 	})

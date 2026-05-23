@@ -9,6 +9,22 @@ import (
 	"github.com/spenc/savant-cli/internal/types"
 )
 
+// Pre-compiled regex patterns for smart routing keywords (avoid per-call compilation).
+var strongKeywordPatterns []*regexp.Regexp
+
+func init() {
+	keywords := []string{
+		"plan", "design", "architect", "refactor", "debug",
+		"investigate", "analyze", "implement", "optimize",
+		"review", "audit", "diagnose", "root cause", "propose",
+		"trace", "reproduce",
+	}
+	for _, kw := range keywords {
+		strongKeywordPatterns = append(strongKeywordPatterns,
+			regexp.MustCompile(`\b`+regexp.QuoteMeta(kw)+`\b`))
+	}
+}
+
 // Router selects the best provider based on availability and configuration.
 type Router struct {
 	providers    []Provider
@@ -70,22 +86,14 @@ func (r *Router) SmartRouting(userText string, turnNumber int) types.RoutingDeci
 		maxWords = 28
 	}
 
-	// Check for strong keywords (word-boundary match to avoid false positives)
-	strongKeywords := []string{
-		"plan", "design", "architect", "refactor", "debug",
-		"investigate", "analyze", "implement", "optimize",
-		"review", "audit", "diagnose", "root cause", "propose",
-		"trace", "reproduce",
-	}
+	// Check for strong keywords (pre-compiled word-boundary patterns)
 	lower := strings.ToLower(trimmed)
-	for _, kw := range strongKeywords {
-		// Use word-boundary regex to avoid matching "I plan to go to lunch"
-		re := regexp.MustCompile(`\b` + regexp.QuoteMeta(kw) + `\b`)
+	for _, re := range strongKeywordPatterns {
 		if re.MatchString(lower) {
 			return types.RoutingDecision{
 				Model:      r.smartRouting.StrongModel,
 				Complexity: "strong",
-				Reason:     "keyword: " + kw,
+				Reason:     "keyword: " + re.String(),
 			}
 		}
 	}

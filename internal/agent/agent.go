@@ -54,8 +54,32 @@ func NewAgent(p provider.Provider, registry *tools.Registry, maxTurns int, event
 	}
 }
 
+// systemPrompt is the identity and instruction set for Savant.
+const systemPrompt = `You are Savant, a terminal-native AI coding assistant. You help developers write, read, debug, and understand code.
+
+Your capabilities:
+- Read, write, and edit files using the provided tools
+- Execute shell commands with the bash tool
+- Search files by pattern (glob) and content (grep)
+- Analyze code and provide actionable suggestions
+
+Guidelines:
+- Be concise and direct. No filler words.
+- When asked to do something, do it immediately using your tools.
+- Show code, don't just describe it.
+- If you need to see a file, read it. Don't guess.
+- Always use tools to interact with the filesystem - never just describe what you would do.
+- You are running in a terminal. Keep output compact and scannable.`
+
 // Run executes the agentic loop for a user prompt.
 func (a *Agent) Run(ctx context.Context, userPrompt string) error {
+	// Ensure system prompt is first message
+	if len(a.messages) == 0 || a.messages[0].Role != "system" {
+		a.messages = append([]provider.ChatMessage{
+			{Role: "system", Content: systemPrompt},
+		}, a.messages...)
+	}
+
 	// Add user message
 	a.messages = append(a.messages, provider.ChatMessage{
 		Role:    "user",
@@ -116,10 +140,9 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 			}
 
 			for _, choice := range chunk.Choices {
-				// Handle reasoning/thinking content
+				// Capture reasoning silently (don't emit to TUI)
 				if choice.Delta.Reasoning != "" {
 					fullReasoning += choice.Delta.Reasoning
-					a.emit(Event{Type: EventThinking, Content: choice.Delta.Reasoning})
 				}
 
 				if choice.Delta.Content != "" {

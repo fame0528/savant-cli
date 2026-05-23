@@ -94,7 +94,7 @@ func (ci *ChatItem) renderFresh(theme *Theme, width int) []string {
 }
 
 func (ci *ChatItem) renderUser(theme *Theme, width int) []string {
-	timeStr := ci.timestamp.Format("15:04")
+	timeStr := ci.timestamp.Format("3:04PM")
 	header := theme.UserMsgHeader.Render(fmt.Sprintf(" YOU [%s]", timeStr))
 	wrapped := wordWrap(ci.content, width-6)
 	result := []string{header}
@@ -105,7 +105,7 @@ func (ci *ChatItem) renderUser(theme *Theme, width int) []string {
 }
 
 func (ci *ChatItem) renderAssistant(theme *Theme, width int) []string {
-	timeStr := ci.timestamp.Format("15:04")
+	timeStr := ci.timestamp.Format("3:04PM")
 	header := theme.AssistantMsgHeader.Render(fmt.Sprintf(" SAVANT [%s]", timeStr))
 	wrapped := wordWrap(ci.content, width-6)
 	result := []string{header}

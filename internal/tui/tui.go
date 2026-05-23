@@ -656,7 +656,7 @@ func (m Model) renderChatArea(width, height int) string {
 }
 
 func (m Model) renderUserMsg(msg chatMessage, width int) []string {
-	timeStr := msg.timestamp.Format("15:04")
+	timeStr := msg.timestamp.Format("3:04PM")
 	header := m.theme.UserMsgHeader.Render(fmt.Sprintf(" YOU [%s]", timeStr))
 	wrapped := wordWrap(msg.content, width-6)
 	result := []string{header}
@@ -667,7 +667,7 @@ func (m Model) renderUserMsg(msg chatMessage, width int) []string {
 }
 
 func (m Model) renderAssistantMsg(msg chatMessage, width int) []string {
-	timeStr := msg.timestamp.Format("15:04")
+	timeStr := msg.timestamp.Format("3:04PM")
 	header := m.theme.AssistantMsgHeader.Render(fmt.Sprintf(" SAVANT [%s]", timeStr))
 	wrapped := wordWrap(msg.content, width-6)
 	result := []string{header}

@@ -37,16 +37,19 @@ type Agent struct {
 	registry *tools.Registry
 	messages []provider.ChatMessage
 	maxTurns int
-	onEvent  func(Event)
+	events   chan<- Event // channel to send events to the TUI
 }
 
 // NewAgent creates a new agent.
-func NewAgent(p provider.Provider, registry *tools.Registry, maxTurns int, onEvent func(Event)) *Agent {
+// The events channel receives real-time events from the agent loop.
+// The messages parameter provides prior conversation history for continuity.
+func NewAgent(p provider.Provider, registry *tools.Registry, maxTurns int, events chan<- Event, priorMessages []provider.ChatMessage) *Agent {
 	return &Agent{
 		provider: p,
 		registry: registry,
 		maxTurns: maxTurns,
-		onEvent:  onEvent,
+		events:   events,
+		messages: priorMessages,
 	}
 }
 
@@ -186,8 +189,12 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 }
 
 func (a *Agent) emit(e Event) {
-	if a.onEvent != nil {
-		a.onEvent(e)
+	if a.events != nil {
+		// Non-blocking send - if channel is full, drop the event
+		select {
+		case a.events <- e:
+		default:
+		}
 	}
 }
 

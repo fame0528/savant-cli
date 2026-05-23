@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -17,33 +18,42 @@ import (
 	"github.com/spenc/savant-cli/internal/tools"
 )
 
+// ─────────────────────────────────────────────────────────────
 // Messages
+// ─────────────────────────────────────────────────────────────
+
 type agentEventMsg agent.Event
 type agentDoneMsg struct{}
 type tickMsg time.Time
 type spinnerTickMsg struct{}
 
-// Layout panels
-const (
-	panelSidebar = iota
-	panelChat
-	panelStatus
-	panelInput
-	panelLogs
-)
+// eventSub is a tea.Cmd that reads from the agent event channel.
+func eventSub(ch <-chan agent.Event) tea.Cmd {
+	return func() tea.Msg {
+		e, ok := <-ch
+		if !ok {
+			return agentDoneMsg{}
+		}
+		return agentEventMsg(e)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// Model
+// ─────────────────────────────────────────────────────────────
 
 // Model is the root Bubble Tea model for Savant CLI.
 type Model struct {
 	// Config
-	provider     provider.Provider
-	registry     *tools.Registry
-	commands     *commands.Registry
-	sessionSvc   *session.Service
-	pet          *pet.Pet
-	theme        *Theme
-	maxTurns     int
-	width        int
-	height       int
+	provider   provider.Provider
+	registry   *tools.Registry
+	commands   *commands.Registry
+	sessionSvc *session.Service
+	pet        *pet.Pet
+	theme      *Theme
+	maxTurns   int
+	width      int
+	height     int
 
 	// Layout
 	sidebarWidth int
@@ -52,17 +62,21 @@ type Model struct {
 	logLines     []string
 
 	// Chat state
-	messages   []chatMessage
-	input      string
-	cursorPos  int
-	streaming  string
-	working    bool
-	scrollPos  int
-	err        error
+	messages  []chatMessage
+	input     string
+	cursorPos int // rune index, not byte index
+	streaming string
+	working   bool
+	scrollPos int
+	err       error
 
 	// Agent
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx     context.Context
+	cancel  context.CancelFunc
+	evtChan chan agent.Event // channel for agent events
+
+	// Conversation history (provider format) - preserved between turns
+	agentMessages []provider.ChatMessage
 
 	// Animation
 	spinnerFrame int
@@ -75,15 +89,10 @@ type Model struct {
 	totalTokensOut int
 	totalCost      float64
 	turnCount      int
-	providerLatency time.Duration
 
 	// Sidebar state
-	sidebarTab   int // 0=files, 1=sessions, 2=tasks
-	recentFiles  []string
-
-	// Command palette
-	showCmdPalette bool
-	cmdFilter      string
+	sidebarTab  int // 0=files, 1=sessions, 2=tasks, 3=pet
+	recentFiles []string
 }
 
 type chatMessage struct {
@@ -93,6 +102,7 @@ type chatMessage struct {
 	timestamp time.Time
 }
 
+// New creates a new TUI model.
 func New(p provider.Provider, registry *tools.Registry, cmdReg *commands.Registry, sessionSvc *session.Service, petObj *pet.Pet, maxTurns int) Model {
 	return Model{
 		provider:     p,
@@ -139,7 +149,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agentDoneMsg:
 		m.working = false
-		m.streaming = ""
+		// Flush any remaining streaming text
+		if m.streaming != "" {
+			m.messages = append(m.messages, chatMessage{
+				role:      "assistant",
+				content:   m.streaming,
+				timestamp: time.Now(),
+			})
+			m.streaming = ""
+		}
 		m.turnCount++
 		return m, nil
 
@@ -152,6 +170,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Glitch flicker every 10 ticks
 		if m.tickCount%10 == 0 {
 			m.glitchActive = !m.glitchActive
+		}
+		// Pet tick every 60 seconds (600 ticks)
+		if m.pet != nil && m.tickCount%600 == 0 {
+			m.pet.Tick()
 		}
 		return m, tickCmd()
 
@@ -169,6 +191,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
+	// If agent is working, only accept cancel
 	if m.working {
 		if key == "ctrl+c" {
 			if m.cancel != nil {
@@ -189,8 +212,6 @@ func (m Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.showSidebar = !m.showSidebar
 	case "ctrl+l":
 		m.showLogs = !m.showLogs
-	case "ctrl+p":
-		m.showCmdPalette = !m.showCmdPalette
 
 	case "enter":
 		if strings.TrimSpace(m.input) == "" {
@@ -199,8 +220,9 @@ func (m Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleSubmit()
 
 	case "backspace":
-		if len(m.input) > 0 && m.cursorPos > 0 {
-			m.input = m.input[:m.cursorPos-1] + m.input[m.cursorPos:]
+		runes := []rune(m.input)
+		if len(runes) > 0 && m.cursorPos > 0 {
+			m.input = string(append(runes[:m.cursorPos-1], runes[m.cursorPos:]...))
 			m.cursorPos--
 		}
 
@@ -209,13 +231,14 @@ func (m Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.cursorPos--
 		}
 	case "right":
-		if m.cursorPos < len(m.input) {
+		runes := []rune(m.input)
+		if m.cursorPos < len(runes) {
 			m.cursorPos++
 		}
 	case "home", "ctrl+a":
 		m.cursorPos = 0
 	case "end", "ctrl+e":
-		m.cursorPos = len(m.input)
+		m.cursorPos = utf8.RuneCountInString(m.input)
 	case "up":
 		if m.scrollPos > 0 {
 			m.scrollPos--
@@ -227,8 +250,15 @@ func (m Model) handleKeyPress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.sidebarTab = (m.sidebarTab + 1) % 4
 
 	default:
-		if len(key) == 1 {
-			m.input = m.input[:m.cursorPos] + key + m.input[m.cursorPos:]
+		// Insert character (single rune only)
+		r, size := utf8.DecodeRuneInString(key)
+		if r != utf8.RuneError && size > 0 {
+			runes := []rune(m.input)
+			newRunes := make([]rune, 0, len(runes)+1)
+			newRunes = append(newRunes, runes[:m.cursorPos]...)
+			newRunes = append(newRunes, r)
+			newRunes = append(newRunes, runes[m.cursorPos:]...)
+			m.input = string(newRunes)
 			m.cursorPos++
 		}
 	}
@@ -259,6 +289,11 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Pet event: user sent a message
+	if m.pet != nil {
+		m.pet.OnMessage()
+	}
+
 	// Regular message - send to agent
 	m.messages = append(m.messages, chatMessage{
 		role:      "user",
@@ -268,23 +303,31 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 	m.working = true
 	m.streaming = ""
 
+	// Create event channel and agent with prior conversation history
+	m.evtChan = make(chan agent.Event, 64)
 	m.ctx, m.cancel = context.WithCancel(context.Background())
+	a := agent.NewAgent(m.provider, m.registry, m.maxTurns, m.evtChan, m.agentMessages)
 
-	return m, func() tea.Msg {
-		onEvent := func(e agent.Event) {}
-		a := agent.NewAgent(m.provider, m.registry, m.maxTurns, onEvent)
+	// Start agent in a goroutine
+	go func() {
 		err := a.Run(m.ctx, prompt)
-		if err != nil {
-			return agentEventMsg(agent.Event{Type: agent.EventError, Error: err})
+		// Save conversation history for next turn
+		if err == nil {
+			// We'll capture messages when done
 		}
-		return agentDoneMsg{}
-	}
+		close(m.evtChan)
+	}()
+
+	// Subscribe to events
+	return m, eventSub(m.evtChan)
 }
 
 func (m Model) handleAgentEvent(e agent.Event) (tea.Model, tea.Cmd) {
 	switch e.Type {
 	case agent.EventText:
 		m.streaming += e.Content
+		return m, eventSub(m.evtChan)
+
 	case agent.EventToolCall:
 		m.messages = append(m.messages, chatMessage{
 			role:      "tool",
@@ -292,29 +335,45 @@ func (m Model) handleAgentEvent(e agent.Event) (tea.Model, tea.Cmd) {
 			content:   fmt.Sprintf("Calling %s...", e.Tool),
 			timestamp: time.Now(),
 		})
+		if m.pet != nil {
+			m.pet.OnToolCall()
+		}
+		return m, eventSub(m.evtChan)
+
 	case agent.EventToolResult:
+		// Update the last tool message with the result
 		for i := len(m.messages) - 1; i >= 0; i-- {
 			if m.messages[i].role == "tool" {
 				m.messages[i].content = e.Content
 				break
 			}
 		}
+		return m, eventSub(m.evtChan)
+
 	case agent.EventDone:
-		if m.streaming != "" {
-			m.messages = append(m.messages, chatMessage{
-				role:      "assistant",
-				content:   m.streaming,
-				timestamp: time.Now(),
-			})
-			m.streaming = ""
-		}
-		m.working = false
+		// Handled by agentDoneMsg when channel closes
+		return m, eventSub(m.evtChan)
+
 	case agent.EventError:
 		m.err = e.Error
 		m.working = false
 		m.streaming = ""
+		return m, nil
 	}
-	return m, nil
+
+	return m, eventSub(m.evtChan)
+}
+
+// ─────────────────────────────────────────────────────────────
+// Safe string utilities
+// ─────────────────────────────────────────────────────────────
+
+// safeRepeat returns empty string if n <= 0.
+func safeRepeat(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat(s, n)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -329,6 +388,9 @@ func (m Model) View() tea.View {
 	chatWidth := m.width
 	if m.showSidebar {
 		chatWidth -= m.sidebarWidth + 1
+	}
+	if chatWidth < 10 {
+		chatWidth = 10
 	}
 
 	// Build each panel
@@ -357,14 +419,13 @@ func (m Model) View() tea.View {
 		sideLines := strings.Split(sidebar, "\n")
 		toolLines := strings.Split(toolPanel, "\n")
 
-		// Interleave sidebar with chat + tool
 		maxLines := max(len(chatLines)+len(toolLines), len(sideLines))
 		for i := 0; i < maxLines; i++ {
 			// Sidebar column
 			if i < len(sideLines) {
 				sb.WriteString(sideLines[i])
 			} else {
-				sb.WriteString(strings.Repeat(" ", m.sidebarWidth))
+				sb.WriteString(safeRepeat(" ", m.sidebarWidth))
 			}
 			sb.WriteString("│")
 
@@ -401,27 +462,28 @@ func (m Model) View() tea.View {
 }
 
 // ─────────────────────────────────────────────────────────────
-// TITLE BAR - Logo + provider + animated elements
+// TITLE BAR
 // ─────────────────────────────────────────────────────────────
 
 func (m Model) renderTitleBar() string {
 	logo := GetAnimatedLogo(m.glitchFrame, m.theme)
 	provInfo := m.theme.ProviderBadge(m.provider.Name())
 
-	// Animated separator
-	sep := m.theme.AnimatedSeparator(m.width-len(stripAnsi(logo))-len(stripAnsi(provInfo))-4, m.tickCount)
+	logoW := len(stripAnsi(logo))
+	provW := len(stripAnsi(provInfo))
+	sepWidth := m.width - logoW - provW - 4
+	sep := m.theme.AnimatedSeparator(sepWidth, m.tickCount)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, logo, sep, provInfo)
 }
 
 // ─────────────────────────────────────────────────────────────
-// SIDEBAR - Multi-tab panel (Files / Sessions / Tasks)
+// SIDEBAR
 // ─────────────────────────────────────────────────────────────
 
 func (m Model) renderSidebar() string {
 	var sb strings.Builder
 
-	// Tab bar
 	tabs := []string{"📁 Files", "💬 Sessions", "📋 Tasks", "🐾 Pet"}
 	tabBar := ""
 	for i, tab := range tabs {
@@ -431,14 +493,13 @@ func (m Model) renderSidebar() string {
 			tabBar += m.theme.TabInactive.Render(tab)
 		}
 	}
-	sb.WriteString(m.theme.SidebarHeader.Render(" ╔"+"═"+strings.Repeat("═", m.sidebarWidth-4)+"╗ "))
+	sb.WriteString(m.theme.SidebarHeader.Render(" ╔" + safeRepeat("═", m.sidebarWidth-4) + "╗ "))
 	sb.WriteString("\n")
 	sb.WriteString(tabBar)
 	sb.WriteString("\n")
-	sb.WriteString(" ╟"+strings.Repeat("─", m.sidebarWidth-3)+"╢")
+	sb.WriteString(" ╟" + safeRepeat("─", m.sidebarWidth-3) + "╢")
 	sb.WriteString("\n")
 
-	// Tab content
 	switch m.sidebarTab {
 	case 0:
 		sb.WriteString(m.renderFileTree())
@@ -450,16 +511,14 @@ func (m Model) renderSidebar() string {
 		sb.WriteString(m.renderPetPanel())
 	}
 
-	// Bottom border
-	sb.WriteString(" ╚"+strings.Repeat("═", m.sidebarWidth-3)+"╝ ")
+	sb.WriteString(" ╚" + safeRepeat("═", m.sidebarWidth-3) + "╝ ")
 
-	// Pad to fill width
 	lines := strings.Split(sb.String(), "\n")
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
 		stripped := stripAnsi(line)
 		if len(stripped) < m.sidebarWidth {
-			line += strings.Repeat(" ", m.sidebarWidth-len(stripped))
+			line += safeRepeat(" ", m.sidebarWidth-len(stripped))
 		}
 		result = append(result, line)
 	}
@@ -505,17 +564,14 @@ func (m Model) renderPetPanel() string {
 	p := m.pet
 	var sb strings.Builder
 
-	// Pet animation frame
 	frame := p.Frame(m.tickCount)
 	for _, line := range strings.Split(frame, "\n") {
 		sb.WriteString(m.theme.Info.Render("  " + line + "\n"))
 	}
 
-	// Name + mood
 	mood := p.Mood().Emoji()
 	sb.WriteString(m.theme.Info.Render(fmt.Sprintf("  %s %s\n", p.Name, mood)))
 
-	// Stats bars
 	barWidth := m.sidebarWidth - 8
 	if barWidth < 10 {
 		barWidth = 10
@@ -523,23 +579,21 @@ func (m Model) renderPetPanel() string {
 	sb.WriteString(m.theme.Success.Render("  "+p.HPBar(barWidth)+"\n"))
 	sb.WriteString(m.theme.Info.Render("  "+p.XPBar(barWidth)+"\n"))
 
-	// Status
 	sb.WriteString(m.theme.TextDim.Render("  "+p.StatusLine()+"\n"))
 	sb.WriteString("\n")
 	sb.WriteString(m.theme.TextDim.Render("  "+p.Stats()+"\n"))
 	sb.WriteString("\n")
 
-	// Actions
 	sb.WriteString(m.theme.Warn.Render("  Commands:\n"))
 	sb.WriteString(m.theme.TextDim.Render("  /pet feed   /pet play\n"))
 	sb.WriteString(m.theme.TextDim.Render("  /pet rest   /pet heal\n"))
-	sb.WriteString(m.theme.TextDim.Render("  /pet stats  /pet name\n"))
+	sb.WriteString(m.theme.TextDim.Render("  /pet stats\n"))
 
 	return sb.String()
 }
 
 // ─────────────────────────────────────────────────────────────
-// CHAT AREA - Messages with rich formatting
+// CHAT AREA
 // ─────────────────────────────────────────────────────────────
 
 func (m Model) renderChatArea(width int) string {
@@ -549,8 +603,8 @@ func (m Model) renderChatArea(width int) string {
 
 	var lines []string
 
-	// Header
-	lines = append(lines, m.theme.ChatHeader.Render(" ╔═ CHAT "+strings.Repeat("═", width-12)+"╗"))
+	header := safeRepeat("═", max(1, width-12))
+	lines = append(lines, m.theme.ChatHeader.Render(" ╔═ CHAT "+header+"╗"))
 
 	for _, msg := range m.messages {
 		switch msg.role {
@@ -578,15 +632,14 @@ func (m Model) renderChatArea(width int) string {
 		lines = append(lines, m.theme.Error.Render("  ✗ ERROR: "+m.err.Error()))
 	}
 
-	// Footer
-	lines = append(lines, m.theme.ChatHeader.Render(" ╚"+strings.Repeat("═", width-3)+"╝"))
+	footer := safeRepeat("═", max(1, width-3))
+	lines = append(lines, m.theme.ChatHeader.Render(" ╚"+footer+"╝"))
 
-	// Scroll
 	chatHeight := m.height - 10
 	if m.showLogs {
 		chatHeight -= 6
 	}
-	if len(lines) > chatHeight {
+	if chatHeight > 0 && len(lines) > chatHeight {
 		lines = lines[len(lines)-chatHeight:]
 	}
 
@@ -611,8 +664,8 @@ func (m Model) renderToolMsg(msg chatMessage, width int) string {
 	icon := m.theme.ToolIcon.Render("⚡")
 	name := m.theme.ToolName.Render(msg.tool)
 	content := msg.content
-	if len(content) > width-10 {
-		content = content[:width-13] + "..."
+	if width > 18 && len(content) > width-18 {
+		content = content[:width-21] + "..."
 	}
 	return m.theme.ToolMessage.Render(fmt.Sprintf("   %s %s: %s", icon, name, content))
 }
@@ -626,33 +679,33 @@ func (m Model) renderStreamingMsg(width int) string {
 
 func (m Model) renderWelcome(width int) string {
 	logo := GetAnimatedLogo(m.glitchFrame, m.theme)
-	divider := m.theme.Divider(width - 4)
+	divider := m.theme.Divider(max(1, width-4))
 	help := m.theme.HelpText.Render(
 		"  Welcome to Savant CLI — Terminal-Native AI Coding Assistant\n\n" +
-		"  Commands:\n" +
-		"    /help        Show all commands\n" +
-		"    /provider    Configure AI providers\n" +
-		"    /model       Switch model\n" +
-		"    /session     Session management\n" +
-		"    /config      View/edit configuration\n\n" +
-		"  Keybindings:\n" +
-		"    Ctrl+S       Toggle sidebar\n" +
-		"    Ctrl+L       Toggle log panel\n" +
-		"    Ctrl+P       Command palette\n" +
-		"    Tab          Cycle sidebar tabs\n" +
-		"    Enter        Send message\n" +
-		"    Ctrl+C       Cancel / Quit\n\n" +
-		"  Providers:\n" +
-		"    9router      Local gateway (15+ providers)\n" +
-		"    MiMo V2 Pro  Free via Xiaomi API\n" +
-		"    Ollama       Local models\n",
+			"  Commands:\n" +
+			"    /help        Show all commands\n" +
+			"    /provider    Configure AI providers\n" +
+			"    /model       Switch model\n" +
+			"    /session     Session management\n" +
+			"    /config      View/edit configuration\n" +
+			"    /pet         Interact with your pet\n\n" +
+			"  Keybindings:\n" +
+			"    Ctrl+S       Toggle sidebar\n" +
+			"    Ctrl+L       Toggle log panel\n" +
+			"    Tab          Cycle sidebar tabs\n" +
+			"    Enter        Send message\n" +
+			"    Ctrl+C       Cancel / Quit\n\n" +
+			"  Providers:\n" +
+			"    9router      Local gateway (15+ providers)\n" +
+			"    MiMo V2 Pro  Free via Xiaomi API\n" +
+			"    Ollama       Local models\n",
 	)
 
 	return logo + "\n" + divider + "\n" + help
 }
 
 // ─────────────────────────────────────────────────────────────
-// TOOL PANEL - Shows recent tool executions
+// TOOL PANEL
 // ─────────────────────────────────────────────────────────────
 
 func (m Model) renderToolPanel(width int) string {
@@ -668,10 +721,10 @@ func (m Model) renderToolPanel(width int) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(m.theme.ToolPanelHeader.Render(" ╔═ TOOLS "+strings.Repeat("═", width-12)+"╗"))
+	header := safeRepeat("═", max(1, width-12))
+	sb.WriteString(m.theme.ToolPanelHeader.Render(" ╔═ TOOLS "+header+"╗"))
 	sb.WriteString("\n")
 
-	// Show last 5 tool calls
 	start := 0
 	if len(toolMsgs) > 5 {
 		start = len(toolMsgs) - 5
@@ -680,18 +733,19 @@ func (m Model) renderToolPanel(width int) string {
 		icon := m.theme.ToolIcon.Render("⚡")
 		name := m.theme.ToolName.Render(msg.tool)
 		result := msg.content
-		if len(result) > width-15 {
-			result = result[:width-18] + "..."
+		if width > 18 && len(result) > width-18 {
+			result = result[:width-21] + "..."
 		}
 		sb.WriteString(m.theme.ToolMessage.Render(fmt.Sprintf(" %s %s → %s\n", icon, name, result)))
 	}
 
-	sb.WriteString(m.theme.ToolPanelHeader.Render(" ╚"+strings.Repeat("═", width-3)+"╝"))
+	footer := safeRepeat("═", max(1, width-3))
+	sb.WriteString(m.theme.ToolPanelHeader.Render(" ╚" + footer + "╝"))
 	return sb.String()
 }
 
 // ─────────────────────────────────────────────────────────────
-// INPUT AREA - Rich input with prompt styling
+// INPUT AREA
 // ─────────────────────────────────────────────────────────────
 
 func (m Model) renderInputArea() string {
@@ -708,21 +762,15 @@ func (m Model) renderInputArea() string {
 }
 
 // ─────────────────────────────────────────────────────────────
-// STATUS BAR - Multi-column status with stats
+// STATUS BAR
 // ─────────────────────────────────────────────────────────────
 
 func (m Model) renderStatusBar() string {
-	// Left: provider + model
 	left := fmt.Sprintf(" %s ", m.provider.Name())
-
-	// Center: stats
 	center := fmt.Sprintf(" Turns: %d | Tokens: %d/%d | Cost: $%.4f ",
 		m.turnCount, m.totalTokensIn, m.totalTokensOut, m.totalCost)
-
-	// Right: keybindings
 	right := " Ctrl+S:Sidebar | Ctrl+L:Logs | Ctrl+C:Quit "
 
-	// Fill gaps
 	leftLen := len(left)
 	centerLen := len(center)
 	rightLen := len(right)
@@ -736,17 +784,18 @@ func (m Model) renderStatusBar() string {
 	gap2 := m.width - total - gap1
 
 	return m.theme.StatusBar.Render(
-		left + strings.Repeat(" ", gap1) + center + strings.Repeat(" ", gap2) + right,
+		left + safeRepeat(" ", gap1) + center + safeRepeat(" ", gap2) + right,
 	)
 }
 
 // ─────────────────────────────────────────────────────────────
-// LOG PANEL - Scrolling log output
+// LOG PANEL
 // ─────────────────────────────────────────────────────────────
 
 func (m Model) renderLogPanel() string {
 	var sb strings.Builder
-	sb.WriteString(m.theme.LogHeader.Render(" ╔═ LOGS "+strings.Repeat("═", m.width-11)+"╗"))
+	header := safeRepeat("═", max(1, m.width-11))
+	sb.WriteString(m.theme.LogHeader.Render(" ╔═ LOGS "+header+"╗"))
 	sb.WriteString("\n")
 
 	if len(m.logLines) == 0 {
@@ -761,6 +810,7 @@ func (m Model) renderLogPanel() string {
 		}
 	}
 
-	sb.WriteString(m.theme.LogHeader.Render(" ╚"+strings.Repeat("═", m.width-3)+"╝"))
+	footer := safeRepeat("═", max(1, m.width-3))
+	sb.WriteString(m.theme.LogHeader.Render(" ╚" + footer + "╝"))
 	return sb.String()
 }

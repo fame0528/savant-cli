@@ -82,7 +82,7 @@ func DiscoverBuiltin() []Skill {
 		if !entry.IsDir() {
 			continue
 		}
-		skillPath := filepath.Join("builtin", entry.Name(), SkillFileName)
+		skillPath := "builtin/" + entry.Name() + "/" + SkillFileName // embed.FS requires forward slashes
 		data, err := builtinFS.ReadFile(skillPath)
 		if err != nil {
 			continue

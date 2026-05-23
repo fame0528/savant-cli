@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -85,7 +86,7 @@ func (r *Runner) runOne(ctx context.Context, h compiledHook, toolName string, to
 	// Build environment
 	env := buildEnv(h.cfg.Event, toolName, "", r.cwd, r.projectDir, string(toolInput))
 
-	cmd := exec.CommandContext(hookCtx, "sh", "-c", h.cfg.Command)
+	cmd := shellCommand(hookCtx, h.cfg.Command)
 	cmd.Stdin = bytes.NewReader(payload)
 	cmd.Env = env
 	cmd.Dir = r.cwd
@@ -181,4 +182,13 @@ func parseStdout(hookName, output string) HookResult {
 	hr.UpdatedInput = parsed.Input
 
 	return hr
+}
+
+// shellCommand creates an exec.Cmd that runs the given command string
+// in the appropriate shell for the current platform.
+func shellCommand(ctx context.Context, command string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.CommandContext(ctx, "cmd", "/c", command)
+	}
+	return exec.CommandContext(ctx, "sh", "-c", command)
 }

@@ -4,6 +4,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"sync"
 )
 
 // Tool is the interface all built-in tools implement.
@@ -72,49 +73,42 @@ func (r *Registry) All() []Tool {
 	return tools
 }
 
-// ToOpenAITools converts registered tools to OpenAI tool format.
-func (r *Registry) ToOpenAITools() []map[string]interface{} {
-	tools := make([]map[string]interface{}, 0, len(r.tools))
-	for _, t := range r.tools {
-		tools = append(tools, map[string]interface{}{
-			"type": "function",
-			"function": map[string]interface{}{
-				"name":        t.Name(),
-				"description": t.Description(),
-				"parameters":  json.RawMessage(t.Parameters()),
-			},
-		})
-	}
-	return tools
-}
-
 // ExecuteAll runs multiple tool calls concurrently and returns results.
 func (r *Registry) ExecuteAll(ctx context.Context, calls []ToolCall) []ToolResult {
 	results := make([]ToolResult, len(calls))
-	for i, call := range calls {
-		t, ok := r.tools[call.Name]
-		if !ok {
-			results[i] = ToolResult{
-				ToolCallID: call.ID,
-				Content:    "unknown tool: " + call.Name,
-				IsError:    true,
-			}
-			continue
-		}
+	var wg sync.WaitGroup
 
-		content, err := t.Execute(ctx, call.Arguments)
-		if err != nil {
-			results[i] = ToolResult{
-				ToolCallID: call.ID,
-				Content:    err.Error(),
-				IsError:    true,
+	for i, call := range calls {
+		wg.Add(1)
+		go func(idx int, c ToolCall) {
+			defer wg.Done()
+
+			t, ok := r.tools[c.Name]
+			if !ok {
+				results[idx] = ToolResult{
+					ToolCallID: c.ID,
+					Content:    "unknown tool: " + c.Name,
+					IsError:    true,
+				}
+				return
 			}
-			continue
-		}
-		results[i] = ToolResult{
-			ToolCallID: call.ID,
-			Content:    content,
-		}
+
+			content, err := t.Execute(ctx, c.Arguments)
+			if err != nil {
+				results[idx] = ToolResult{
+					ToolCallID: c.ID,
+					Content:    err.Error(),
+					IsError:    true,
+				}
+				return
+			}
+			results[idx] = ToolResult{
+				ToolCallID: c.ID,
+				Content:    content,
+			}
+		}(i, call)
 	}
+
+	wg.Wait()
 	return results
 }

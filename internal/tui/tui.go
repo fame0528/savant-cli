@@ -145,6 +145,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.tickCount++
+		// Advance animation frame every 2 seconds (20 ticks at 100ms)
+		if m.tickCount%20 == 0 {
+			m.glitchFrame = (m.glitchFrame + 1) % logoFrameCount
+		}
+		// Glitch flicker every 10 ticks
 		if m.tickCount%10 == 0 {
 			m.glitchActive = !m.glitchActive
 		}
@@ -400,11 +405,11 @@ func (m Model) View() tea.View {
 // ─────────────────────────────────────────────────────────────
 
 func (m Model) renderTitleBar() string {
-	logo := m.theme.GlitchLogo(m.glitchFrame, m.glitchActive)
+	logo := GetAnimatedLogo(m.glitchFrame, m.theme)
 	provInfo := m.theme.ProviderBadge(m.provider.Name())
 
 	// Animated separator
-	sep := m.theme.AnimatedSeparator(m.width-len(logo)-len(provInfo)-4, m.tickCount)
+	sep := m.theme.AnimatedSeparator(m.width-len(lipgloss.StripAnsi(logo))-len(lipgloss.StripAnsi(provInfo))-4, m.tickCount)
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, logo, sep, provInfo)
 }

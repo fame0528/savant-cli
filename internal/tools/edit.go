@@ -25,7 +25,7 @@ func (t *EditTool) Parameters() json.RawMessage {
 			},
 			"old_string": {
 				"type": "string",
-				"description": "The exact string to find and replace"
+				"description": "The exact string to find and replace (must not be empty)"
 			},
 			"new_string": {
 				"type": "string",
@@ -51,34 +51,43 @@ func (t *EditTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return "", err
 	}
 
+	if params.OldString == "" {
+		return "", fmt.Errorf("old_string must not be empty")
+	}
+
 	data, err := os.ReadFile(params.Path)
 	if err != nil {
 		return "", fmt.Errorf("read file: %w", err)
 	}
 
+	// Preserve original permissions
+	info, err := os.Stat(params.Path)
+	if err != nil {
+		return "", fmt.Errorf("stat file: %w", err)
+	}
+	perm := info.Mode().Perm()
+
 	content := string(data)
+	count := strings.Count(content, params.OldString)
+
+	if count == 0 {
+		return "", fmt.Errorf("old_string not found in file")
+	}
 
 	if params.ReplaceAll {
-		count := strings.Count(content, params.OldString)
-		if count == 0 {
-			return "", fmt.Errorf("old_string not found in file")
-		}
 		content = strings.ReplaceAll(content, params.OldString, params.NewString)
-		if err := os.WriteFile(params.Path, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(params.Path, []byte(content), perm); err != nil {
 			return "", fmt.Errorf("write file: %w", err)
 		}
 		return fmt.Sprintf("Replaced %d occurrences in %s", count, params.Path), nil
 	}
 
-	if !strings.Contains(content, params.OldString) {
-		return "", fmt.Errorf("old_string not found in file")
-	}
-	if strings.Count(content, params.OldString) > 1 {
-		return "", fmt.Errorf("old_string is not unique in file (%d matches). Use a larger context or set replace_all", strings.Count(content, params.OldString))
+	if count > 1 {
+		return "", fmt.Errorf("old_string is not unique in file (%d matches). Use a larger context or set replace_all", count)
 	}
 
 	content = strings.Replace(content, params.OldString, params.NewString, 1)
-	if err := os.WriteFile(params.Path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(params.Path, []byte(content), perm); err != nil {
 		return "", fmt.Errorf("write file: %w", err)
 	}
 	return fmt.Sprintf("Edited %s", params.Path), nil

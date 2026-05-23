@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spenc/savant-cli/internal/types"
 )
@@ -56,7 +58,7 @@ func (r *Router) SmartRouting(userText string, turnNumber int) types.RoutingDeci
 	}
 
 	trimmed := strings.TrimSpace(userText)
-	charCount := len(trimmed)
+	charCount := utf8.RuneCountInString(trimmed)
 	wordCount := len(strings.Fields(trimmed))
 
 	maxChars := r.smartRouting.SimpleMaxChars
@@ -68,7 +70,7 @@ func (r *Router) SmartRouting(userText string, turnNumber int) types.RoutingDeci
 		maxWords = 28
 	}
 
-	// Check for strong keywords
+	// Check for strong keywords (word-boundary match to avoid false positives)
 	strongKeywords := []string{
 		"plan", "design", "architect", "refactor", "debug",
 		"investigate", "analyze", "implement", "optimize",
@@ -77,7 +79,9 @@ func (r *Router) SmartRouting(userText string, turnNumber int) types.RoutingDeci
 	}
 	lower := strings.ToLower(trimmed)
 	for _, kw := range strongKeywords {
-		if strings.Contains(lower, kw) {
+		// Use word-boundary regex to avoid matching "I plan to go to lunch"
+		re := regexp.MustCompile(`\b` + regexp.QuoteMeta(kw) + `\b`)
+		if re.MatchString(lower) {
 			return types.RoutingDecision{
 				Model:      r.smartRouting.StrongModel,
 				Complexity: "strong",

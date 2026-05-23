@@ -4,7 +4,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 
 	"github.com/spenc/savant-cli/internal/provider"
 	"github.com/spenc/savant-cli/internal/tools"
@@ -86,12 +88,18 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 		var (
 			fullContent string
 			toolCalls   []provider.ToolCall
+			streamErr   error
 		)
 
 		for {
 			chunk, err := stream.Next()
 			if err != nil {
-				break // EOF or error
+				if errors.Is(err, io.EOF) {
+					break // Normal end of stream
+				}
+				// Real error - capture it
+				streamErr = fmt.Errorf("stream read error: %w", err)
+				break
 			}
 
 			for _, choice := range chunk.Choices {
@@ -101,11 +109,11 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 				}
 				if len(choice.Delta.ToolCalls) > 0 {
 					for _, tc := range choice.Delta.ToolCalls {
-						// Merge tool call deltas
 						if tc.ID != "" {
+							// New tool call
 							toolCalls = append(toolCalls, tc)
 						} else if len(toolCalls) > 0 {
-							// Append to last tool call's arguments
+							// Delta for existing tool call - append arguments
 							last := &toolCalls[len(toolCalls)-1]
 							last.Function.Arguments = append(last.Function.Arguments, tc.Function.Arguments...)
 						}
@@ -114,6 +122,12 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 			}
 		}
 		stream.Close()
+
+		// If stream had an error, surface it
+		if streamErr != nil {
+			a.emit(Event{Type: EventError, Error: streamErr})
+			return streamErr
+		}
 
 		// If no tool calls, the model is done
 		if len(toolCalls) == 0 {
@@ -133,7 +147,7 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 		}
 		a.messages = append(a.messages, assistantMsg)
 
-		// Execute tool calls
+		// Execute tool calls (concurrently)
 		var calls []tools.ToolCall
 		for _, tc := range toolCalls {
 			calls = append(calls, tools.ToolCall{

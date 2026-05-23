@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -46,27 +47,42 @@ func (t *ReadTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return "", err
 	}
 
-	data, err := os.ReadFile(params.Path)
+	file, err := os.Open(params.Path)
 	if err != nil {
 		return "", fmt.Errorf("read file: %w", err)
 	}
+	defer file.Close()
 
-	lines := strings.Split(string(data), "\n")
-	if params.Limit == 0 {
+	if params.Limit <= 0 {
 		params.Limit = 2000
 	}
-	if params.Offset > 0 {
-		params.Offset-- // Convert to 0-indexed
+	if params.Offset < 1 {
+		params.Offset = 1
 	}
 
-	end := params.Offset + params.Limit
-	if end > len(lines) {
-		end = len(lines)
-	}
+	startLine := params.Offset // 1-indexed
+	endLine := startLine + params.Limit - 1
 
 	var sb strings.Builder
-	for i := params.Offset; i < end; i++ {
-		sb.WriteString(fmt.Sprintf("%d\t%s\n", i+1, lines[i]))
+	scanner := bufio.NewScanner(file)
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		if lineNum >= startLine && lineNum <= endLine {
+			sb.WriteString(fmt.Sprintf("%d\t%s\n", lineNum, scanner.Text()))
+		}
+		if lineNum > endLine {
+			break
+		}
 	}
+
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("scan file: %w", err)
+	}
+
+	if sb.Len() == 0 {
+		return fmt.Sprintf("File has fewer than %d lines.", startLine), nil
+	}
+
 	return sb.String(), nil
 }

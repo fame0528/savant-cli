@@ -96,9 +96,12 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req ChatRequest) (StreamRea
 		return nil, fmt.Errorf("API error %d: %s", httpResp.StatusCode, string(respBody))
 	}
 
+	scanner := bufio.NewScanner(httpResp.Body)
+	scanner.Buffer(make([]byte, 0, 256*1024), 256*1024) // 256KB buffer for large SSE chunks
+
 	return &openAIStreamReader{
 		body:    httpResp.Body,
-		scanner: bufio.NewScanner(httpResp.Body),
+		scanner: scanner,
 	}, nil
 }
 

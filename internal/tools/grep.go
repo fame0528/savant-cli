@@ -45,10 +45,10 @@ func (t *GrepTool) Parameters() json.RawMessage {
 
 func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
-		Pattern        string `json:"pattern"`
-		Path           string `json:"path"`
-		Glob           string `json:"glob"`
-		CaseInsensitive bool  `json:"case_insensitive"`
+		Pattern         string `json:"pattern"`
+		Path            string `json:"path"`
+		Glob            string `json:"glob"`
+		CaseInsensitive bool   `json:"case_insensitive"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", err
@@ -75,17 +75,28 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	maxResults := 250
 
 	err = filepath.Walk(params.Path, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
 			return nil
 		}
-		name := info.Name()
-		if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" {
-			if info.IsDir() {
+
+		// Directory filtering: skip hidden dirs and common large dirs
+		if info.IsDir() {
+			name := info.Name()
+			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
+		// File filtering
+		name := info.Name()
+
+		// Skip hidden files
+		if strings.HasPrefix(name, ".") {
+			return nil
+		}
+
+		// Glob filter
 		if params.Glob != "" {
 			matched, _ := filepath.Match(params.Glob, name)
 			if !matched {
@@ -93,7 +104,8 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 			}
 		}
 
-		if info.Size() > 10*1024*1024 { // Skip files > 10MB
+		// Skip files > 10MB
+		if info.Size() > 10*1024*1024 {
 			return nil
 		}
 

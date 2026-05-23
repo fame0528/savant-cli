@@ -257,3 +257,15 @@ func (r *Registry) RegisterConfig() {
 		},
 	})
 }
+
+// RegisterQuit registers the /quit command.
+func (r *Registry) RegisterQuit() {
+	r.Register(&Command{
+		Name:        "quit",
+		Description: "Exit Savant CLI",
+		Usage:       "/quit",
+		Execute: func(args string) string {
+			return "__QUIT__"
+		},
+	})
+}

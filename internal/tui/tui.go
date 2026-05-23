@@ -238,6 +238,9 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 
 	// Check for slash commands first
 	if result, ok := m.commands.TryExecute(prompt); ok {
+		if result == "__QUIT__" {
+			return m, tea.Quit
+		}
 		m.messages = append(m.messages, chatMessage{
 			role:      "user",
 			content:   prompt,

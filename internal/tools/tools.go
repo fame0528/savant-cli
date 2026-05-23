@@ -4,6 +4,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"sync"
 )
 
@@ -66,6 +67,9 @@ func NewRegistry(skillsDir string) *Registry {
 	r.Register(NewGrepTool())
 	if skillsDir != "" {
 		r.Register(NewSkillManageTool(skillsDir))
+		forgeDir := filepath.Join(skillsDir, "forge")
+		provenance := NewProvenanceTracker(filepath.Join(forgeDir, "provenance.jsonl"))
+		r.Register(NewForgeTool(forgeDir, r, provenance))
 	}
 	return r
 }

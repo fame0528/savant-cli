@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	_ "github.com/ncruces/go-sqlite3/driver"
-	_ "github.com/ncruces/go-sqlite3/embed"
+	"github.com/ncruces/go-sqlite3"
+	"github.com/ncruces/go-sqlite3/driver"
 )
 
 // DB wraps the SQLite database connection.
@@ -25,19 +25,25 @@ func Open(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("create db directory: %w", err)
 	}
 
-	conn, err := sql.Open("sqlite3", dbPath+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)")
+	// Use file: prefix and _txlock=immediate for ncruces driver
+	dsn := fmt.Sprintf("file:%s?_txlock=immediate", dbPath)
+	conn, err := driver.Open(dsn, func(c *sqlite3.Conn) error {
+		// Set pragmas for performance and correctness
+		pragmas := map[string]string{
+			"journal_mode": "WAL",
+			"foreign_keys": "ON",
+			"busy_timeout": "5000",
+			"synchronous":  "NORMAL",
+		}
+		for name, value := range pragmas {
+			if err := c.Exec(fmt.Sprintf("PRAGMA %s = %s;", name, value)); err != nil {
+				return fmt.Errorf("failed to set pragma %q: %w", name, err)
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
-	}
-
-	// Enable WAL mode and foreign keys
-	if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("set WAL mode: %w", err)
-	}
-	if _, err := conn.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
 	db := &DB{conn: conn}

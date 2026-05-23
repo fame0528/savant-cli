@@ -88,6 +88,9 @@ type Model struct {
 	turnCount      int
 
 	sidebarTab int
+
+	mode      agent.AgentType
+	blackboard *agent.Blackboard
 }
 
 type chatMessage struct {
@@ -97,7 +100,7 @@ type chatMessage struct {
 	timestamp time.Time
 }
 
-func New(p provider.Provider, registry *tools.Registry, cmdReg *commands.Registry, sessionSvc *session.Service, petObj *pet.Pet, maxTurns int) Model {
+func New(p provider.Provider, registry *tools.Registry, cmdReg *commands.Registry, sessionSvc *session.Service, petObj *pet.Pet, maxTurns int, mode agent.AgentType, blackboard *agent.Blackboard) Model {
 	cwd, _ := os.Getwd()
 	return Model{
 		provider:     p,
@@ -114,6 +117,8 @@ func New(p provider.Provider, registry *tools.Registry, cmdReg *commands.Registr
 		fileTree:     NewFileTree(cwd, 28),
 		completions:  NewCompletions(40),
 		dialogs:      NewDialogOverlay(),
+		mode:         mode,
+		blackboard:   blackboard,
 	}
 }
 
@@ -323,6 +328,26 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 	m.cursorPos = 0
 	m.completions.Hide()
 
+	// Handle /mode command locally to update TUI state
+	if strings.HasPrefix(prompt, "/mode") {
+		parts := strings.Fields(prompt)
+		if len(parts) >= 2 {
+			newMode, err := agent.ParseAgentType(parts[1])
+			if err != nil {
+				m.messages = append(m.messages, chatMessage{role: "user", content: prompt, timestamp: time.Now()})
+				m.messages = append(m.messages, chatMessage{role: "system", content: err.Error(), timestamp: time.Now()})
+			} else {
+				m.mode = newMode
+				m.messages = append(m.messages, chatMessage{role: "user", content: prompt, timestamp: time.Now()})
+				m.messages = append(m.messages, chatMessage{role: "system", content: fmt.Sprintf("Switched to %s mode\n%s", m.mode, m.mode.Description()), timestamp: time.Now()})
+			}
+		} else {
+			m.messages = append(m.messages, chatMessage{role: "user", content: prompt, timestamp: time.Now()})
+			m.messages = append(m.messages, chatMessage{role: "system", content: fmt.Sprintf("Current mode: %s\n%s\nUse /mode <name> to switch.\nAvailable: code, explore, review, debug, ask", m.mode, m.mode.Description()), timestamp: time.Now()})
+		}
+		return m, nil
+	}
+
 	// Slash commands
 	if result, ok := m.commands.TryExecute(prompt); ok {
 		if result == "__QUIT__" {
@@ -344,7 +369,7 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 
 	m.evtChan = make(chan agent.Event, 64)
 	m.ctx, m.cancel = context.WithCancel(context.Background())
-	a, err := agent.NewAgent(m.provider, m.registry, m.maxTurns, m.evtChan, m.agentMessages)
+	a, err := agent.NewAgent(m.provider, m.registry, m.maxTurns, m.evtChan, m.agentMessages, m.blackboard, m.mode)
 	if err != nil {
 		m.err = err
 		m.working = false
@@ -784,7 +809,7 @@ func (m Model) renderInputArea() string {
 
 func (m Model) renderStatusBar() string {
 	left := fmt.Sprintf(" %s ", m.provider.Name())
-	center := fmt.Sprintf(" Turns:%d ", m.turnCount)
+	center := fmt.Sprintf(" Mode:%s Turns:%d ", m.mode, m.turnCount)
 	right := " Ctrl+B:Sidebar │ Ctrl+L:Logs │ Ctrl+C:Quit "
 	leftLen := len(left)
 	centerLen := len(center)

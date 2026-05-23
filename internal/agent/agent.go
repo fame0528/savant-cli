@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"time"
 
 	"github.com/spenc/savant-cli/internal/provider"
 	"github.com/spenc/savant-cli/internal/tools"
@@ -39,16 +41,19 @@ const (
 type Agent struct {
 	provider        provider.Provider
 	registry        *tools.Registry
+	blackboard      *Blackboard
+	mode            AgentType
 	messages        []provider.ChatMessage
 	maxTurns        int
 	events          chan<- Event
 	systemPrompt    string
 	instructionsMsg string
 	stepMsg         string
+	projectDir      string
 }
 
 // NewAgent creates a new agent with template-based grounding.
-func NewAgent(p provider.Provider, registry *tools.Registry, maxTurns int, events chan<- Event, priorMessages []provider.ChatMessage) (*Agent, error) {
+func NewAgent(p provider.Provider, registry *tools.Registry, maxTurns int, events chan<- Event, priorMessages []provider.ChatMessage, blackboard *Blackboard, mode AgentType) (*Agent, error) {
 	// Build system prompt from template
 	sysPrompt, err := BuildSystemPrompt()
 	if err != nil {
@@ -65,15 +70,21 @@ func NewAgent(p provider.Provider, registry *tools.Registry, maxTurns int, event
 		return nil, fmt.Errorf("build step prompt: %w", err)
 	}
 
+	// Determine project directory from CWD
+	cwd, _ := os.Getwd()
+
 	return &Agent{
 		provider:        p,
 		registry:        registry,
+		blackboard:      blackboard,
+		mode:            mode,
 		maxTurns:        maxTurns,
 		events:          events,
 		messages:        priorMessages,
 		systemPrompt:    sysPrompt,
 		instructionsMsg: instructions,
 		stepMsg:         step,
+		projectDir:      cwd,
 	}, nil
 }
 
@@ -98,9 +109,22 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 		Content: a.instructionsMsg,
 	})
 
+	// Set goal on blackboard if available
+	if a.blackboard != nil {
+		a.blackboard.Set(BlackboardGoal, userPrompt, "agent")
+	}
+
 	// Build tool definitions for the model
+	// Filter by mode: if not code mode, restrict tools
+	var allTools []tools.Tool
+	if a.mode == AgentTypeCode {
+		allTools = a.registry.All()
+	} else {
+		allTools = a.mode.FilterTools(a.registry.All())
+	}
+
 	var toolDefs []provider.Tool
-	for _, t := range a.registry.All() {
+	for _, t := range allTools {
 		toolDefs = append(toolDefs, provider.Tool{
 			Type: "function",
 			Function: provider.ToolFunction{
@@ -217,11 +241,51 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 			})
 		}
 
-		results := a.registry.ExecuteAll(ctx, calls)
+		// Execute regular tool calls first (excluding spawn_agent which is intercepted)
+		var regularCalls []tools.ToolCall
+
+		for _, tc := range calls {
+			if tc.Name == "spawn_agent" {
+				continue
+			}
+			regularCalls = append(regularCalls, tc)
+		}
+
+		results := a.registry.ExecuteAll(ctx, regularCalls)
+
+		// Map regular results back to their original positions
+		allResults := make([]tools.ToolResult, len(calls))
+		regIdx := 0
+		for i, call := range calls {
+			if call.Name == "spawn_agent" {
+				// Handle spawn_agent directly with full access to provider and blackboard
+				subResult := a.handleSpawnAgent(ctx, call.Arguments)
+				allResults[i] = tools.ToolResult{
+					ToolCallID: call.ID,
+					Content:    subResult,
+				}
+			} else if regIdx < len(results) {
+				allResults[i] = results[regIdx]
+				regIdx++
+
+				// Update blackboard with file operations from tool results
+				if a.blackboard != nil {
+					filePath := extractFilePath(call.Arguments)
+					if filePath != "" {
+						switch call.Name {
+						case "edit", "write":
+							a.blackboard.Append(BlackboardFilesModified, filePath, "agent")
+						case "read":
+							a.blackboard.Append(BlackboardFilesRead, filePath, "agent")
+						}
+					}
+				}
+			}
+		}
 
 		// Add tool results as messages and handle follow-ups
 		var followUps []tools.ToolCall
-		for i, result := range results {
+		for i, result := range allResults {
 			toolName := ""
 			if i < len(toolCalls) {
 				toolName = toolCalls[i].Function.Name
@@ -278,3 +342,81 @@ func (a *Agent) emit(e Event) {
 func (a *Agent) Messages() []provider.ChatMessage {
 	return a.messages
 }
+
+// handleSpawnAgent intercepts a spawn_agent tool call and executes the sub-agent
+// directly with full access to the provider, blackboard, registry, and events channel.
+func (a *Agent) handleSpawnAgent(ctx context.Context, args json.RawMessage) string {
+	var params struct {
+		Task      string `json:"task"`
+		AgentType string `json:"agent_type"`
+		MaxTurns  int    `json:"max_turns"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return fmt.Sprintf("spawn_agent error: invalid arguments: %s", err)
+	}
+
+	if params.Task == "" {
+		return "spawn_agent error: task is required"
+	}
+
+	// Parse agent type, defaulting to code
+	agentType := AgentTypeCode
+	if params.AgentType != "" {
+		at, err := ParseAgentType(params.AgentType)
+		if err != nil {
+			// Log warning and proceed with code type
+			slog.Warn("spawn_agent: invalid agent_type, defaulting to code", "value", params.AgentType)
+		} else {
+			agentType = at
+		}
+	}
+
+	// Generate unique agent ID
+	agentID := fmt.Sprintf("sub-%d", time.Now().UnixNano())
+
+	// Emit tool call event for TUI display
+	a.emit(Event{
+		Type: EventToolCall,
+		Tool: "spawn_agent",
+		Content: fmt.Sprintf("Spawning %s agent: %s", agentType, truncateString(params.Task, 80)),
+	})
+
+	cfg := SubAgentConfig{
+		AgentType:  agentType,
+		Task:       params.Task,
+		MaxTurns:   params.MaxTurns,
+		Blackboard: a.blackboard,
+		Provider:   a.provider,
+		Registry:   a.registry,
+		Events:     a.events,
+		AgentID:    agentID,
+		ProjectDir: a.projectDir,
+	}
+
+	result := RunSubAgent(ctx, cfg)
+
+	// Merge sub-agent's results back into blackboard
+	if a.blackboard != nil {
+		for _, f := range result.FilesModified {
+			a.blackboard.Append(BlackboardFilesModified, f, agentID)
+		}
+		for _, f := range result.FilesRead {
+			a.blackboard.Append(BlackboardFilesRead, f, agentID)
+		}
+		for _, d := range result.Decisions {
+			a.blackboard.Append(BlackboardDecisions, d, agentID)
+		}
+	}
+
+	return SubAgentSummary(result)
+}
+
+// truncateString truncates a string to maxLen characters, adding "..." if truncated.
+func truncateString(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
+}
+

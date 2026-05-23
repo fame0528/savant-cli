@@ -106,8 +106,14 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req ChatRequest) (StreamRea
 }
 
 func (p *OpenAIProvider) IsAvailable(ctx context.Context) bool {
-	// Try a minimal request to check availability
-	httpReq, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/models", nil)
+	// Use a short-lived context for availability checks (2s timeout).
+	// http.Client.Do() respects context cancellation, so the existing
+	// client's 5-minute timeout is overridden by this context timeout.
+	// This prevents startup from hanging when providers are unreachable.
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	httpReq, err := http.NewRequestWithContext(checkCtx, "GET", p.baseURL+"/models", nil)
 	if err != nil {
 		return false
 	}

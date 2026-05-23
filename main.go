@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/spenc/savant-cli/internal/agent"
 	"github.com/spenc/savant-cli/internal/commands"
 	"github.com/spenc/savant-cli/internal/config"
 	"github.com/spenc/savant-cli/internal/db"
@@ -102,8 +103,16 @@ func main() {
 	ctx := context.Background()
 	selected := router.Select(ctx)
 
+	// Create shared blackboard for agent context sharing
+	cwd, _ := os.Getwd()
+	blackboard := agent.NewBlackboard()
+	blackboard.Set(agent.BlackboardCwd, cwd, "system")
+
 	// Create tool registry (includes skill_manage tool)
 	registry := tools.NewRegistry(skillsDir)
+
+	// Register spawn_agent tool so the model can call it
+	registry.Register(agent.NewSpawnAgentTool())
 
 	// Create command registry
 	cmdReg := commands.NewRegistry()
@@ -168,8 +177,9 @@ func main() {
 		}()
 	}
 
-	// Create and run TUI
-	model := tui.New(selected, registry, cmdReg, sessionSvc, petObj, cfg.MaxTurns)
+	// Create and run TUI with shared blackboard and default mode
+	currentMode := agent.AgentTypeCode
+	model := tui.New(selected, registry, cmdReg, sessionSvc, petObj, cfg.MaxTurns, currentMode, blackboard)
 	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

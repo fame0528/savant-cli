@@ -26,6 +26,7 @@ func NewRegistry() *Registry {
 	r.RegisterHelp()
 	r.RegisterProvider()
 	r.RegisterModel()
+	r.RegisterMode()
 	r.RegisterSession()
 	r.RegisterConfig()
 	r.RegisterQuit()
@@ -157,6 +158,27 @@ func (r *Registry) RegisterModel() {
 					"Available models depend on your provider."
 			}
 			return fmt.Sprintf("Switching to model: %s\n(Model switching not yet implemented)", args)
+		},
+	})
+}
+
+// RegisterMode registers the /mode command.
+func (r *Registry) RegisterMode() {
+	r.Register(&Command{
+		Name:        "mode",
+		Description: "Switch the agent mode (code/debug/ask/review)",
+		Usage:       "/mode [code|debug|ask|review|explore]",
+		Execute: func(args string) string {
+			if args == "" {
+				return "Current mode handling is done client-side.\n" +
+					"Available modes:\n" +
+					"  code    - Full tool access (read, write, edit, bash, glob, grep)\n" +
+					"  explore - Read-only exploration (read, glob, grep)\n" +
+					"  review  - Read-only code review (read, glob, grep)\n" +
+					"  debug   - Read + diagnostic commands (read, glob, grep, bash read-only)\n" +
+					"  ask     - Read-only Q&A (read, glob, grep)"
+			}
+			return fmt.Sprintf("Switch to mode '%s' is handled client-side.", args)
 		},
 	})
 }

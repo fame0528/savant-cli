@@ -421,39 +421,54 @@ func (m Model) View() tea.View {
 		chatWidth = 20
 	}
 
-	var sb strings.Builder
-
-	// Title bar (single line)
-	sb.WriteString(m.renderTitleBar())
-	sb.WriteString("\n")
-
-	// Main area height
-	usedLines := 3 // title + input + status
+	// Calculate how many lines each section needs
+	footerLines := 1 // input
 	if m.showLogs {
-		usedLines += 5
+		footerLines += 5
 	}
-	mainHeight := m.height - usedLines
+	footerLines++ // status bar
+
+	mainHeight := m.height - 1 - footerLines // -1 for title bar
 	if mainHeight < 1 {
 		mainHeight = 1
 	}
 
+	// Build the output line by line
+	var lines []string
+
+	// Title bar
+	lines = append(lines, m.renderTitleBar())
+
+	// Main content
 	if m.showSidebar {
-		sb.WriteString(m.renderMainArea(chatWidth, mainHeight))
+		mainContent := m.renderMainArea(chatWidth, mainHeight)
+		lines = append(lines, strings.Split(mainContent, "\n")...)
 	} else {
-		sb.WriteString(m.renderChatArea(chatWidth, mainHeight))
+		mainContent := m.renderChatArea(chatWidth, mainHeight)
+		lines = append(lines, strings.Split(mainContent, "\n")...)
 	}
 
-	sb.WriteString(m.renderInputArea())
-	sb.WriteString("\n")
+	// Input area
+	lines = append(lines, m.renderInputArea())
 
+	// Log panel
 	if m.showLogs {
-		sb.WriteString(m.renderLogPanel())
-		sb.WriteString("\n")
+		logContent := m.renderLogPanel()
+		lines = append(lines, strings.Split(logContent, "\n")...)
 	}
 
-	sb.WriteString(m.renderStatusBar())
+	// Status bar
+	lines = append(lines, m.renderStatusBar())
 
-	v := tea.NewView(sb.String())
+	// Pad to exactly m.height
+	for len(lines) < m.height {
+		lines = append(lines, "")
+	}
+	if len(lines) > m.height {
+		lines = lines[:m.height]
+	}
+
+	v := tea.NewView(strings.Join(lines, "\n"))
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 	v.BackgroundColor = Background
@@ -649,6 +664,11 @@ func (m Model) renderChatArea(width, height int) string {
 		lines = append(lines, m.theme.Error.Render("  ✗ "+m.err.Error()))
 	}
 
+	// Pad to fill height
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	// Clip to height (scroll from bottom)
 	if len(lines) > height {
 		lines = lines[len(lines)-height:]
 	}

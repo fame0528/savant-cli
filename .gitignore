@@ -35,3 +35,6 @@ build/
 # Environment
 .env
 .env.local
+
+# Reference codebases (not part of savant-cli)
+resoruces/

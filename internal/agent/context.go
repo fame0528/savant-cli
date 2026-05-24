@@ -3,8 +3,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/spenc/savant-cli/internal/config"
 	"github.com/spenc/savant-cli/internal/provider"
 )
 
@@ -138,4 +142,55 @@ func dedup(items []string) []string {
 		}
 	}
 	return result
+}
+
+// ─────────────────────────────────────────────────────────────
+// Tool Output Distillation (from Gemini CLI)
+// ─────────────────────────────────────────────────────────────
+
+const (
+	DistillThreshold = 4000
+	DistillKeepFirst = 50
+	DistillKeepLast  = 10
+)
+
+// DistillToolOutput reduces a large tool output to a summary.
+func DistillToolOutput(output, toolName string) (string, bool) {
+	if len(output) <= DistillThreshold {
+		return output, false
+	}
+
+	savedPath := saveDistilledOutput(toolName, output)
+
+	lines := strings.Split(output, "\n")
+	totalLines := len(lines)
+
+	if totalLines <= DistillKeepFirst+DistillKeepLast {
+		return output, false
+	}
+
+	first := lines[:DistillKeepFirst]
+	last := lines[totalLines-DistillKeepLast:]
+
+	var sb strings.Builder
+	for _, line := range first {
+		sb.WriteString(line + "\n")
+	}
+	sb.WriteString(fmt.Sprintf("\n... [%d lines truncated, full: %s] ...\n\n",
+		totalLines-DistillKeepFirst-DistillKeepLast, savedPath))
+	for _, line := range last {
+		sb.WriteString(line + "\n")
+	}
+	return sb.String(), true
+}
+
+func saveDistilledOutput(toolName, output string) string {
+	outputDir := filepath.Join(config.ConfigDir(), "tool-outputs")
+	os.MkdirAll(outputDir, 0o755)
+	safeName := strings.ReplaceAll(toolName, "/", "_")
+	safeName = strings.ReplaceAll(safeName, " ", "_")
+	filename := fmt.Sprintf("%s_%d.txt", safeName, time.Now().UnixMilli())
+	path := filepath.Join(outputDir, filename)
+	os.WriteFile(path, []byte(output), 0o644)
+	return path
 }

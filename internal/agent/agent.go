@@ -140,14 +140,22 @@ func (a *Agent) Run(ctx context.Context, userPrompt string) error {
 		// Context compaction check
 		cm := NewContextManager(128000, 0.80, nil)
 		if cm.NeedsCompaction(a.messages) {
-			// Use the summary-based compaction
-			compacted := CompactWithSummary(ctx, a.messages, 8)
-			a.messages = compacted
-			a.emit(Event{Type: EventText, Content: "[Context compacted]\n"})
+			compacted, err := cm.Compact(ctx, a.messages)
+			if err == nil {
+				a.messages = compacted
+				a.emit(Event{Type: EventText, Content: "[Context compacted]\n"})
+			}
 		}
 
-		// Mask old tool outputs to save context
-		a.messages = MaskOldToolOutputs(a.messages, 50000)
+		// Distill large tool outputs to save context
+		for i, msg := range a.messages {
+			if msg.Role == "tool" && len(msg.Content) > DistillThreshold {
+				distilled, wasDistilled := DistillToolOutput(msg.Content, msg.Name)
+				if wasDistilled {
+					a.messages[i].Content = distilled
+				}
+			}
+		}
 
 		// Inject step reminder before each model call
 		messages := make([]provider.ChatMessage, len(a.messages))

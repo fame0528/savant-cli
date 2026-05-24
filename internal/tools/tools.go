@@ -71,6 +71,11 @@ func NewRegistry(skillsDir string) *Registry {
 		provenance := NewProvenanceTracker(filepath.Join(forgeDir, "provenance.jsonl"))
 		r.Register(NewForgeTool(forgeDir, r, provenance))
 	}
+	// Background job tools
+	jobMgr := GetGlobalJobManager()
+	r.Register(NewJobOutputTool(jobMgr))
+	r.Register(NewJobKillTool(jobMgr))
+	r.Register(NewJobListTool(jobMgr))
 	return r
 }
 

@@ -91,6 +91,7 @@ type Model struct {
 
 	mode      agent.AgentType
 	blackboard *agent.Blackboard
+	sessionID string // Current session ID for persistence
 }
 
 type chatMessage struct {

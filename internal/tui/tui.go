@@ -157,6 +157,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				content:   m.streaming,
 				timestamp: time.Now(),
 			})
+			// Save assistant response to session
+			if m.sessionSvc != nil && m.sessionID != "" {
+				m.sessionSvc.AddMessage(context.Background(), session.Message{
+					ID:        fmt.Sprintf("msg_%d", time.Now().UnixNano()),
+					SessionID: m.sessionID,
+					Role:      "assistant",
+					Content:   m.streaming,
+					CreatedAt: time.Now(),
+				})
+			}
 			m.streaming = ""
 		}
 		m.turnCount++
@@ -368,6 +378,22 @@ func (m Model) handleSubmit() (tea.Model, tea.Cmd) {
 	m.streaming = ""
 	m.err = nil
 
+	// Session persistence: create session on first message
+	if m.sessionSvc != nil && m.sessionID == "" {
+		m.sessionID = fmt.Sprintf("ses_%d", time.Now().UnixNano())
+		m.sessionSvc.Create(context.Background(), m.sessionID, truncateStr(prompt, 60), m.provider.Name(), "mimo-v2-pro")
+	}
+	// Save user message to session
+	if m.sessionSvc != nil && m.sessionID != "" {
+		m.sessionSvc.AddMessage(context.Background(), session.Message{
+			ID:        fmt.Sprintf("msg_%d", time.Now().UnixNano()),
+			SessionID: m.sessionID,
+			Role:      "user",
+			Content:   prompt,
+			CreatedAt: time.Now(),
+		})
+	}
+
 	m.evtChan = make(chan agent.Event, 64)
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	a, err := agent.NewAgent(m.provider, m.registry, m.maxTurns, m.evtChan, m.agentMessages, m.blackboard, m.mode)
@@ -433,6 +459,14 @@ func safeRepeat(s string, n int) string {
 		return ""
 	}
 	return strings.Repeat(s, n)
+}
+
+func truncateStr(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
 }
 
 // ─────────────────────────────────────────────────────────────

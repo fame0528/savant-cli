@@ -875,5 +875,3 @@ func (m Model) renderLogPanel() string {
 	}
 	return sb.String()
 }
-
-
